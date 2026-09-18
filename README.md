@@ -102,10 +102,3 @@ The ESP32-C3 is powered from the MPK's +5V rail via a diode to prevent power con
 
 **Important**: Do **NOT** feed the ESP32's `3V3` pin from the MPK's 3.3V rail. Use the `5V` pin to allow the ESP32's onboard regulator to handle the load.
 
-### Editor Portal
-Press the **BOOT** button on the ESP32-C3 to host a local WiFi access point:
-- **SSID**: `MPK-mini-Open`
-- **Password**: `mpkmini1`
-- **Address**: `http://192.168.4.1/`
-
-This allows you to edit your velocity curves and programs directly from your browser.
