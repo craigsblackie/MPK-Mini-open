@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MPK mini Open Editor</title>
+<style>
+  :root {
+    --bg: #14181d; --panel: #1c2229; --panel2: #232b33; --line: #313b45;
+    --ink: #e6ecf2; --dim: #93a1ad; --accent: #4bb3c4; --accent2: #d99a4e;
+    --bad: #d9705c; --good: #66b989;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  header {
+    position: sticky; top: 0; z-index: 5; background: var(--panel);
+    border-bottom: 1px solid var(--line); padding: 10px 16px;
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .01em; }
+  h2 { font-size: 13px; margin: 0 0 12px; font-weight: 600; letter-spacing: .06em;
+       text-transform: uppercase; color: var(--dim); }
+  .grow { flex: 1; }
+  #status { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+  #status.ok { color: var(--good); } #status.err { color: var(--bad); }
+  main { padding: 16px; max-width: 1080px; margin: 0 auto;
+         display: flex; flex-direction: column; gap: 14px; }
+  section { background: var(--panel); border: 1px solid var(--line);
+            border-radius: 6px; padding: 14px 16px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; }
+  .f { display: flex; flex-direction: column; gap: 4px; min-width: 96px; }
+  .f > span { font-size: 11px; color: var(--dim); letter-spacing: .04em; }
+  input, select, button {
+    font: inherit; color: var(--ink); background: var(--panel2);
+    border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px;
+  }
+  input[type=number] { width: 84px; font-family: var(--mono); }
+  button { cursor: pointer; background: var(--panel2); }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); color: #0d1519; border-color: var(--accent);
+                   font-weight: 600; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 5px 7px; border-bottom: 1px solid var(--line); text-align: left; }
+  th { font-size: 11px; color: var(--dim); font-weight: 600; text-transform: uppercase;
+       letter-spacing: .04em; }
+  td input { width: 68px; }
+  .wrap { overflow-x: auto; }
+  .curves { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+  canvas { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; }
+  .hint { color: var(--dim); font-size: 12px; margin: 10px 0 0; }
+  .banner { padding: 8px 12px; border-radius: 4px; font-size: 13px; display: none; }
+  .banner.show { display: block; }
+  .banner.err { background: #3a211c; color: #f0b3a5; border: 1px solid #6d3a2e; }
+  .banner.ok { background: #1c3328; color: #a8dcc0; border: 1px solid #2f5a44; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MPK mini Open</h1>
+  <span id="status">connecting…</span>
+  <span class="grow"></span>
+  <label class="f" style="min-width:auto">
+    <select id="prog" aria-label="Program">
+      <option value="0">Scratch (0)</option>
+      <option value="1">Program 1</option>
+      <option value="2">Program 2</option>
+      <option value="3">Program 3</option>
+      <option value="4">Program 4</option>
+    </select>
+  </label>
+  <button id="reload" type="button">Reload</button>
+  <button id="save" class="primary" type="button">Save to keyboard</button>
+</header>
+
+<main>
+  <div id="banner" class="banner"></div>
+
+  <section>
+    <h2>Keyboard</h2>
+    <div class="row">
+      <label class="f"><span>MIDI channel</span><input id="channel" type="number" min="0" max="15"></label>
+      <label class="f"><span>Pad channel</span><input id="padChannel" type="number" min="0" max="15"></label>
+      <label class="f"><span>Octave (0–8)</span><input id="octave" type="number" min="0" max="8"></label>
+      <label class="f"><span>Transpose (0–24)</span><input id="transpose" type="number" min="0" max="24"></label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Arpeggiator</h2>
+    <div class="row">
+      <label class="f"><span>On</span>
+        <select id="arpOn"><option value="0">Off</option><option value="1">On</option></select></label>
+      <label class="f"><span>Mode</span>
+        <select id="arpMode">
+          <option value="0">Up</option><option value="1">Down</option>
+          <option value="2">Exclusive</option><option value="3">Inclusive</option>
+          <option value="4">Random</option><option value="5">Order</option>
+        </select></label>
+      <label class="f"><span>Division</span>
+        <select id="arpDiv">
+          <option value="0">1/4</option><option value="1">1/4T</option>
+          <option value="2">1/8</option><option value="3">1/8T</option>
+          <option value="4">1/16</option><option value="5">1/16T</option>
+          <option value="6">1/32</option><option value="7">1/32T</option>
+        </select></label>
+      <label class="f"><span>Octave range</span>
+        <select id="arpRange"><option value="0">1</option><option value="1">2</option>
+          <option value="2">3</option><option value="3">4</option></select></label>
+      <label class="f"><span>Latch</span>
+        <select id="arpLatch"><option value="0">Off</option><option value="1">On</option></select></label>
+      <label class="f"><span>Clock</span>
+        <select id="arpExternal"><option value="0">Internal</option><option value="1">External</option></select></label>
+      <label class="f"><span>Tempo (BPM)</span><input id="tempo" type="number" min="30" max="240"></label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Pads</h2>
+    <div class="wrap">
+      <table>
+        <thead><tr><th>Pad</th><th>Note A</th><th>Note B</th><th>CC A</th><th>CC B</th>
+          <th>PC A</th><th>PC B</th><th>Toggle</th></tr></thead>
+        <tbody id="pads"></tbody>
+      </table>
+    </div>
+    <p class="hint">Bank A and B are selected on the keyboard. Which column is used depends on the pad output mode (Note / CC / Program Change).</p>
+  </section>
+
+  <section>
+    <h2>Knobs</h2>
+    <div class="wrap">
+      <table>
+        <thead><tr><th>Knob</th><th>CC</th><th>Low</th><th>High</th></tr></thead>
+        <tbody id="knobs"></tbody>
+      </table>
+    </div>
+    <p class="hint">CC 0 leaves a knob unassigned. Low above High inverts the sweep.</p>
+  </section>
+
+  <section>
+    <h2>Velocity curves</h2>
+    <div class="curves">
+      <div class="row" style="flex-direction:column">
+        <label class="f"><span>Keys</span>
+          <select id="keyCurve" data-curve></select></label>
+        <label class="f"><span>Key fixed value</span>
+          <input id="keyFixed" type="number" min="1" max="127" data-curve></label>
+        <label class="f"><span>Pads</span>
+          <select id="padCurve" data-curve></select></label>
+        <label class="f"><span>Pad fixed value</span>
+          <input id="padFixed" type="number" min="1" max="127" data-curve></label>
+        <label class="f"><span>Hard strike (ms)</span>
+          <input id="keyFastMs" type="number" min="1" max="127"></label>
+        <label class="f"><span>Softest press (ms)</span>
+          <input id="keySlowMs" type="number" min="2" max="127"></label>
+        <button id="saveCurves" type="button">Save curves</button>
+        <button id="measure" type="button">Measure my keybed</button>
+        <p class="hint" id="velstats" style="max-width:220px">Play for a minute, then
+          measure: the shortest and longest contact intervals become the window.</p>
+      </div>
+      <div>
+        <canvas id="graph" width="300" height="300" aria-label="Velocity response graph"></canvas>
+        <p class="hint" style="max-width:300px">Horizontal: how hard you play.
+          Vertical: the velocity sent. The straight line is Linear, which is
+          exactly what the original firmware does.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var CURVES = ["Linear (stock)", "Soft", "Medium soft", "Hard", "Very hard", "Fixed"];
+  var PAD_KEYS = ["noteA", "noteB", "ccA", "ccB", "pcA", "pcB", "toggle"];
+  var KNOB_KEYS = ["cc", "low", "high"];
+  var el = function (id) { return document.getElementById(id); };
+  var program = null, settings = null, busy = false;
+
+  /* ---------- build the repeated rows ---------- */
+  function buildTables() {
+    var pads = el("pads"), knobs = el("knobs"), i, f, tr, td, inp;
+    for (i = 0; i < 8; i++) {
+      tr = document.createElement("tr");
+      td = document.createElement("th"); td.textContent = String(i + 1); tr.appendChild(td);
+      for (f = 0; f < PAD_KEYS.length; f++) {
+        td = document.createElement("td");
+        inp = document.createElement("input");
+        inp.type = "number";
+        inp.min = "0";
+        inp.max = PAD_KEYS[f] === "toggle" ? "1" : "127";
+        inp.id = "p" + i + PAD_KEYS[f];
+        td.appendChild(inp); tr.appendChild(td);
+      }
+      pads.appendChild(tr);
+    }
+    for (i = 0; i < 8; i++) {
+      tr = document.createElement("tr");
+      td = document.createElement("th"); td.textContent = String(i + 1); tr.appendChild(td);
+      for (f = 0; f < KNOB_KEYS.length; f++) {
+        td = document.createElement("td");
+        inp = document.createElement("input");
+        inp.type = "number"; inp.min = "0"; inp.max = "127";
+        inp.id = "k" + i + KNOB_KEYS[f];
+        td.appendChild(inp); tr.appendChild(td);
+      }
+      knobs.appendChild(tr);
+    }
+    CURVES.forEach(function (name, value) {
+      [el("keyCurve"), el("padCurve")].forEach(function (sel) {
+        var o = document.createElement("option");
+        o.value = String(value); o.textContent = name;
+        sel.appendChild(o);
+      });
+    });
+  }
+
+  /* ---------- status + banner ---------- */
+  function setStatus(text, cls) {
+    var s = el("status");
+    s.textContent = text;
+    s.className = cls || "";
+  }
+  var bannerTimer = null;
+  function say(message, kind) {
+    var b = el("banner");
+    b.textContent = message;
+    b.className = "banner show " + kind;
+    if (bannerTimer) clearTimeout(bannerTimer);
+    if (kind === "ok") bannerTimer = setTimeout(function () { b.className = "banner"; }, 3000);
+  }
+
+  function lock(on) {
+    busy = on;
+    ["reload", "save", "saveCurves", "prog"].forEach(function (id) { el(id).disabled = on; });
+  }
+
+  /* ---------- transport ---------- */
+  function request(url, options) {
+    return fetch(url, options).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (body) {
+        if (!r.ok) throw new Error(body.error || ("HTTP " + r.status));
+        return body;
+      });
+    });
+  }
+
+  /* ---------- form <-> model ---------- */
+  var FLAT = ["channel", "padChannel", "octave", "transpose", "arpOn", "arpMode",
+              "arpDiv", "arpExternal", "arpLatch", "arpRange", "tempo"];
+
+  function toForm(p) {
+    FLAT.forEach(function (k) { if (p[k] !== undefined) el(k).value = p[k]; });
+    p.pads.forEach(function (pad, i) {
+      PAD_KEYS.forEach(function (k) { el("p" + i + k).value = pad[k]; });
+    });
+    p.knobs.forEach(function (knob, i) {
+      KNOB_KEYS.forEach(function (k) { el("k" + i + k).value = knob[k]; });
+    });
+  }
+
+  function clampField(id, fallback) {
+    var input = el(id);
+    var v = parseInt(input.value, 10);
+    if (isNaN(v)) return fallback;
+    var lo = input.min === "" ? 0 : parseInt(input.min, 10);
+    var hi = input.max === "" ? 127 : parseInt(input.max, 10);
+    if (v < lo) v = lo;
+    if (v > hi) v = hi;
+    input.value = v;
+    return v;
+  }
+
+  function fromForm() {
+    var out = {}, i;
+    FLAT.forEach(function (k) { out[k] = clampField(k, 0); });
+    for (i = 0; i < 8; i++) {
+      PAD_KEYS.forEach(function (k) { out["p" + i + k] = clampField("p" + i + k, 0); });
+      KNOB_KEYS.forEach(function (k) { out["k" + i + k] = clampField("k" + i + k, 0); });
+    }
+    return out;
+  }
+
+  /* ---------- curve graph ---------- */
+  function curveValue(kind, x, fixed) {
+    var g = {1: 0.55, 2: 0.75, 3: 1.45, 4: 2.10}[kind];
+    if (kind === 5) return Math.max(1, Math.min(127, fixed));
+    if (!g) return x;
+    return Math.max(1, Math.min(127, Math.round(127 * Math.pow(x / 127, g))));
+  }
+
+  function drawGraph() {
+    var c = el("graph"), ctx = c.getContext("2d");
+    var w = c.width, h = c.height, pad = 22;
+    var css = getComputedStyle(document.documentElement);
+    var line = css.getPropertyValue("--line").trim();
+    var dim = css.getPropertyValue("--dim").trim();
+    var accent = css.getPropertyValue("--accent").trim();
+    var accent2 = css.getPropertyValue("--accent2").trim();
+
+    ctx.clearRect(0, 0, w, h);
+    var plotW = w - pad * 2, plotH = h - pad * 2;
+
+    ctx.strokeStyle = line; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (var g = 0; g <= 4; g++) {
+      var gx = pad + plotW * g / 4, gy = pad + plotH * g / 4;
+      ctx.moveTo(pad, gy); ctx.lineTo(pad + plotW, gy);
+      ctx.moveTo(gx, pad); ctx.lineTo(gx, pad + plotH);
+    }
+    ctx.stroke();
+
+    /* Reference diagonal: what Linear does. */
+    ctx.strokeStyle = dim; ctx.setLineDash([3, 3]); ctx.beginPath();
+    ctx.moveTo(pad, pad + plotH); ctx.lineTo(pad + plotW, pad);
+    ctx.stroke(); ctx.setLineDash([]);
+
+    [[parseInt(el("keyCurve").value, 10), clampField("keyFixed", 100), accent],
+     [parseInt(el("padCurve").value, 10), clampField("padFixed", 100), accent2]
+    ].forEach(function (spec) {
+      ctx.strokeStyle = spec[2]; ctx.lineWidth = 2; ctx.beginPath();
+      for (var x = 1; x <= 127; x++) {
+        var y = curveValue(spec[0], x, spec[1]);
+        var px = pad + plotW * (x - 1) / 126;
+        var py = pad + plotH * (1 - (y - 1) / 126);
+        if (x === 1) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    });
+
+    ctx.fillStyle = dim; ctx.font = "11px system-ui";
+    ctx.fillText("1", 4, h - pad + 4);
+    ctx.fillText("127", 2, pad + 4);
+    ctx.fillText("played", w / 2 - 20, h - 5);
+    ctx.fillStyle = accent; ctx.fillText("keys", pad + 6, pad + 14);
+    ctx.fillStyle = accent2; ctx.fillText("pads", pad + 44, pad + 14);
+  }
+
+  /* ---------- actions ---------- */
+  function loadProgram() {
+    lock(true);
+    var n = el("prog").value;
+    return request("/api/program/" + n)
+      .then(function (p) { program = p; toForm(p); say("Loaded program " + n + ".", "ok"); })
+      .catch(function (e) { say("Could not load program " + n + ": " + e.message, "err"); })
+      .then(function () { lock(false); });
+  }
+
+  function saveProgram() {
+    lock(true);
+    var n = el("prog").value;
+    return request("/api/program/" + n, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(fromForm())
+    }).then(function (p) {
+      program = p; toForm(p);
+      say("Saved to program " + n + " and read back to confirm.", "ok");
+    }).catch(function (e) {
+      say("Save failed: " + e.message + " — the keyboard kept its previous settings.", "err");
+    }).then(function () { lock(false); });
+  }
+
+  function loadSettings() {
+    return request("/api/settings").then(function (s) {
+      settings = s;
+      el("keyCurve").value = s.keyCurve;
+      el("padCurve").value = s.padCurve;
+      el("keyFixed").value = s.keyFixed;
+      el("padFixed").value = s.padFixed;
+      if (s.keyFastMs !== undefined) el("keyFastMs").value = s.keyFastMs;
+      if (s.keySlowMs !== undefined) el("keySlowMs").value = s.keySlowMs;
+      drawGraph();
+    }).catch(function (e) { say("Could not read velocity curves: " + e.message, "err"); });
+  }
+
+  function saveSettings() {
+    lock(true);
+    return request("/api/settings", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        keyCurve: parseInt(el("keyCurve").value, 10),
+        padCurve: parseInt(el("padCurve").value, 10),
+        keyFixed: clampField("keyFixed", 100),
+        padFixed: clampField("padFixed", 100),
+        keyFastMs: clampField("keyFastMs", 2),
+        keySlowMs: clampField("keySlowMs", 127)
+      })
+    }).then(function (s) {
+      settings = s;
+      say("Velocity curves saved to the keyboard.", "ok");
+      drawGraph();
+    }).catch(function (e) {
+      say("Could not save curves: " + e.message, "err");
+    }).then(function () { lock(false); });
+  }
+
+  function poll() {
+    request("/api/status").then(function (s) {
+      if (s.keyboard) setStatus("keyboard connected · program " + s.currentProgram, "ok");
+      else setStatus("no reply from keyboard — check the UART wiring", "err");
+    }).catch(function () { setStatus("bridge unreachable", "err"); });
+  }
+
+  /* ---------- wire up ---------- */
+  buildTables();
+  el("reload").addEventListener("click", loadProgram);
+  el("save").addEventListener("click", saveProgram);
+  el("saveCurves").addEventListener("click", saveSettings);
+  el("measure").addEventListener("click", function () {
+    request("/api/velstats").then(function (v) {
+      if (!v.strikes) {
+        say("No keys struck yet — play for a minute, then measure again.", "err");
+        return;
+      }
+      el("keyFastMs").value = Math.max(1, v.fastestMs);
+      el("keySlowMs").value = Math.max(v.fastestMs + 1, v.slowestMs);
+      el("velstats").textContent =
+        "Measured " + v.strikes + " strikes: fastest " + v.fastestMs +
+        " ms, slowest " + v.slowestMs + " ms. Save to apply.";
+      drawGraph();
+    }).catch(function (e) { say("Could not measure: " + e.message, "err"); });
+  });
+  el("prog").addEventListener("change", loadProgram);
+  document.querySelectorAll("[data-curve]").forEach(function (node) {
+    node.addEventListener("input", drawGraph);
+    node.addEventListener("change", drawGraph);
+  });
+
+  drawGraph();
+  poll();
+  loadSettings().then(loadProgram);
+  setInterval(function () { if (!busy) poll(); }, 5000);
+})();
+</script>
+</body>
+</html>
