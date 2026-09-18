@@ -98,6 +98,8 @@ The ESP32-C3 is powered from the MPK's +5V rail via a diode to prevent power con
 | **+5 V Net** | 1A Diode (Anode to MPK, Cathode to ESP) | **5V Pin** |
 | **GND** | Direct Connection | **GND Pin** |
 
+![Wiring Diagram](wiring.jpg)
+
 **Important**: Do **NOT** feed the ESP32's `3V3` pin from the MPK's 3.3V rail. Use the `5V` pin to allow the ESP32's onboard regulator to handle the load.
 
 ### Editor Portal
