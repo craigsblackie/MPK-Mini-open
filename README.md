@@ -2,7 +2,7 @@
 
 This repository contains the open-source firmware for the AKAI MPK mini mk1 (STM32F102R8T6) and the accompanying ESP32-C3 Bluetooth LE MIDI bridge. Together, they enable wireless MIDI connectivity for the keyboard while maintaining full compatibility with the original hardware features.
 
-The repository is organized into two main parts:
+The repository is organised into two main parts:
 - `stm32/`: The main keyboard firmware (STM32F102).
 - `esp32/`: The Bluetooth LE MIDI bridge (ESP32-C3).
 
