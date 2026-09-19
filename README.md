@@ -68,7 +68,10 @@ idf.py -p /dev/ttyACM0 flash monitor
 3. **Connect power** via the diode (see below) and verify USB MIDI from the keyboard still works.
 
 ### Editor Portal
-Press the **BOOT** button on the ESP32-C3 to host a local WiFi access point:
+Press and hold the keyboard's **PROGRAM** button for two seconds to start the
+WiFi editor. You can also press the **BOOT** button on the ESP32-C3. Use the
+same action again to stop it.
+
 - **SSID**: `MPK-mini-Open`
 - **Password**: `mpkmini1`
 - **Address**: `http://192.168.4.1/`
@@ -101,4 +104,3 @@ The ESP32-C3 is powered from the MPK's +5V rail via a diode to prevent power con
 ![Wiring Diagram](wiring.jpg)
 
 **Important**: Do **NOT** feed the ESP32's `3V3` pin from the MPK's 3.3V rail. Use the `5V` pin to allow the ESP32's onboard regulator to handle the load.
-
