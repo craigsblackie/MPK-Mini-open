@@ -14,5 +14,6 @@ void transport_process(uint8_t status_byte);
 uint8_t transport_program_held(void);
 uint8_t transport_arp_held(void);
 void transport_mark_arp_setting_used(void);
+void transport_mark_program_setting_used(void);
 
 #endif /* TRANSPORT_H */

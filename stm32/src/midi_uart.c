@@ -47,6 +47,16 @@ void midi_uart_mirror_usb(const uint8_t *events, size_t len)
 	}
 }
 
+void midi_uart_editor_toggle(void)
+{
+	/* 0x7D is the MIDI educational/non-commercial manufacturer ID.  The
+	 * ESP consumes this private command instead of forwarding it to BLE. */
+	static const uint8_t command[] = {
+		0xf0, 0x7d, 'M', 'P', 'K', 0x01, 0xf7
+	};
+	for (size_t i = 0; i < sizeof(command); i++) tx_push(command[i]);
+}
+
 void midi_uart_process(void)
 {
 	/* Bound RX work so a noisy or disconnected peer cannot starve scanning. */

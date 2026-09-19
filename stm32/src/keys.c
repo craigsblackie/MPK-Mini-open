@@ -123,11 +123,14 @@ static void send_note(uint8_t key_index, uint8_t on, uint8_t velocity)
 {
 	if (on && (transport_program_held() || transport_arp_held())) {
 		key_suppressed[key_index] = 1;
-		if (transport_program_held() && key_index >= 21 && key_index <= 24) {
-			keys_all_off();
-			pads_all_off();
-			arp_all_off();
-			program_select((uint8_t)(key_index - 20));
+		if (transport_program_held()) {
+			transport_mark_program_setting_used();
+			if (key_index >= 21 && key_index <= 24) {
+				keys_all_off();
+				pads_all_off();
+				arp_all_off();
+				program_select((uint8_t)(key_index - 20));
+			}
 		} else if (transport_arp_held()) {
 			if (key_index < 8) {
 				program_set_arp_clock_div(key_index);

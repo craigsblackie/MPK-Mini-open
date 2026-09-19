@@ -38,6 +38,8 @@
 #include "program.h"
 #include "arp.h"
 #include "keys.h"
+#include "midi_uart.h"
+#include "systick.h"
 
 #define BIT_ARP_TOGGLE (1u << 0)
 #define BIT_TAP (1u << 1)
@@ -46,14 +48,21 @@
 #define BIT_OCTAVE_DOWN (1u << 4)
 #define BIT_OCTAVE_UP (1u << 5)
 #define BOTH_OCTAVE_BITS (BIT_OCTAVE_DOWN | BIT_OCTAVE_UP)
+#define EDITOR_HOLD_MS 2000u
 
 static uint8_t previous_status;
 static uint8_t arp_setting_used;
+static uint8_t program_setting_used;
+static uint8_t editor_toggle_sent;
+static uint32_t program_press_ms;
 
 void transport_init(void)
 {
 	previous_status = 0;
 	arp_setting_used = 0;
+	program_setting_used = 0;
+	editor_toggle_sent = 0;
+	program_press_ms = 0;
 }
 
 static void send_sustain(uint8_t on)
@@ -82,6 +91,19 @@ void transport_process(uint8_t status_byte)
 	if ((changed & BIT_PROGRAM) && (status_byte & BIT_PROGRAM)) {
 		keys_all_off();
 		arp_all_off();
+		program_press_ms = systick_millis();
+		program_setting_used = 0;
+		editor_toggle_sent = 0;
+	}
+	if ((changed & BIT_PROGRAM) && !(status_byte & BIT_PROGRAM)) {
+		program_setting_used = 0;
+		editor_toggle_sent = 0;
+	}
+	if ((status_byte & BIT_PROGRAM) && !program_setting_used &&
+	    !editor_toggle_sent &&
+	    (uint32_t)(systick_millis() - program_press_ms) >= EDITOR_HOLD_MS) {
+		midi_uart_editor_toggle();
+		editor_toggle_sent = 1;
 	}
 
 	if (changed & BIT_SUSTAIN) {
@@ -118,3 +140,4 @@ void transport_process(uint8_t status_byte)
 uint8_t transport_program_held(void) { return (previous_status & BIT_PROGRAM) != 0; }
 uint8_t transport_arp_held(void) { return (previous_status & BIT_ARP_TOGGLE) != 0; }
 void transport_mark_arp_setting_used(void) { arp_setting_used = 1; }
+void transport_mark_program_setting_used(void) { program_setting_used = 1; }

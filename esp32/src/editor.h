@@ -11,7 +11,8 @@
  * translates that page's requests into the same SysEx the discontinued
  * AKAI editor used. No driver, no host software, nothing to install.
  *
- * It is off by default and toggled with the BOOT button, for two reasons:
+ * It is off by default and toggled with a two-second PROGRAM hold or the
+ * ESP32's BOOT button, for two reasons:
  * the radio would otherwise be sharing the antenna with BLE for no
  * benefit while playing, and a permanently-on AP roughly doubles the
  * bridge's current draw on a supply taken from the keyboard's USB rail.

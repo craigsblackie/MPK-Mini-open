@@ -76,7 +76,10 @@ same action again to stop it.
 - **Password**: `mpkmini1`
 - **Address**: `http://192.168.4.1/`
 
-This allows you to edit your velocity curves and programs directly from your browser.
+The editor should open automatically through captive-portal discovery after
+you join the network. If it does not, open the address above in a browser.
+This allows you to edit velocity curves and programs without installing host
+software.
 
 ---
 

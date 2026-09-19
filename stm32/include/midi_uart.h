@@ -13,4 +13,8 @@ void midi_uart_process(void);
 /* Mirror one or more four-byte USB-MIDI event packets as raw MIDI bytes. */
 void midi_uart_mirror_usb(const uint8_t *events, size_t len);
 
+/* Ask the attached ESP32 to toggle its WiFi editor portal.  This control
+ * message goes only over the internal UART; it is not sent over USB MIDI. */
+void midi_uart_editor_toggle(void);
+
 #endif

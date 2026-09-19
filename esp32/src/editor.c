@@ -10,6 +10,7 @@
  * of the original protocol, not a value that drifts with our firmware.
  */
 #include "editor.h"
+#include "captive_dns.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -33,6 +34,7 @@ static const char *TAG = "editor";
 #define AP_PASSWORD "mpkmini1"        /* WPA2 needs 8 characters minimum */
 #define AP_CHANNEL  6
 #define AP_MAX_CONN 2
+#define PORTAL_URL  "http://192.168.4.1/"
 
 /*
  * Transmit power cap, in units of 0.25 dBm -- 44 is 11 dBm.
@@ -84,6 +86,7 @@ static httpd_handle_t server;
 static esp_netif_t *ap_netif;
 static bool portal_active;
 static bool netif_ready;
+static captive_dns_handle_t dns_server;
 
 #ifdef EDITOR_HOST_TEST
 extern const uint8_t editor_html_start[];
@@ -263,6 +266,16 @@ static esp_err_t root_get(httpd_req_t *req)
 	                       editor_html_end - editor_html_start - 1);
 }
 
+/* Connectivity probes use several vendor-specific paths. Any unknown GET is
+ * sent to the editor; a small body is important for iOS portal detection. */
+static esp_err_t captive_redirect_get(httpd_req_t *req)
+{
+	httpd_resp_set_status(req, "303 See Other");
+	httpd_resp_set_hdr(req, "Location", PORTAL_URL);
+	httpd_resp_set_type(req, "text/plain");
+	return httpd_resp_sendstr(req, "Open the MPK mini editor");
+}
+
 static esp_err_t status_get(httpd_req_t *req)
 {
 	const uint8_t request[9] = {0xf0, 0x47, 0x00, 0x7c, 'd', 0x00, 0x01, 0x00, 0xf7};
@@ -438,7 +451,33 @@ static const httpd_uri_t routes[] = {
 	{.uri = "/api/velstats",  .method = HTTP_GET,  .handler = velstats_get},
 	{.uri = "/api/program/*", .method = HTTP_GET,  .handler = program_get},
 	{.uri = "/api/program/*", .method = HTTP_POST, .handler = program_post},
+	{.uri = "/*",             .method = HTTP_GET,  .handler = captive_redirect_get},
 };
+
+static void configure_captive_portal(void)
+{
+	/* Option 114 is the standards-based captive-portal hint. Offering this AP
+	 * as DNS as well supports older Android, Apple, and Windows probes. */
+	esp_err_t err = esp_netif_dhcps_stop(ap_netif);
+	if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED)
+		ESP_LOGW(TAG, "could not stop DHCP server: %d", err);
+
+	uint8_t offer_dns = 1;
+	err = esp_netif_dhcps_option(ap_netif, ESP_NETIF_OP_SET,
+	                             ESP_NETIF_DOMAIN_NAME_SERVER,
+	                             &offer_dns, sizeof(offer_dns));
+	if (err != ESP_OK) ESP_LOGW(TAG, "could not advertise portal DNS: %d", err);
+
+	static char portal_url[] = PORTAL_URL;
+	err = esp_netif_dhcps_option(ap_netif, ESP_NETIF_OP_SET,
+	                             ESP_NETIF_CAPTIVEPORTAL_URI,
+	                             portal_url, strlen(portal_url));
+	if (err != ESP_OK) ESP_LOGW(TAG, "could not advertise portal URL: %d", err);
+
+	err = esp_netif_dhcps_start(ap_netif);
+	if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED)
+		ESP_LOGW(TAG, "could not restart DHCP server: %d", err);
+}
 
 static void portal_start(void)
 {
@@ -462,6 +501,7 @@ static void portal_start(void)
 	ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
 	ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi));
 	ESP_ERROR_CHECK(esp_wifi_start());
+	configure_captive_portal();
 	/* Both of these must follow esp_wifi_start(). BLE MIDI keeps running
 	 * while the portal is up, so leave the radio to the coexistence
 	 * scheduler rather than chasing WiFi throughput. */
@@ -492,12 +532,22 @@ static void portal_start(void)
 	for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++)
 		httpd_register_uri_handler(server, &routes[i]);
 
+	esp_netif_ip_info_t ip_info;
+	if (esp_netif_get_ip_info(ap_netif, &ip_info) == ESP_OK)
+		dns_server = captive_dns_start(ip_info.ip.addr);
+	if (dns_server == NULL)
+		ESP_LOGW(TAG, "wildcard DNS failed to start; DHCP portal hint remains active");
+
 	portal_active = true;
-	ESP_LOGI(TAG, "editor at http://192.168.4.1/  ssid=%s pass=%s", AP_SSID, AP_PASSWORD);
+	ESP_LOGI(TAG, "editor at %s  ssid=%s pass=%s", PORTAL_URL, AP_SSID, AP_PASSWORD);
 }
 
 static void portal_stop(void)
 {
+	if (dns_server != NULL) {
+		captive_dns_stop(dns_server);
+		dns_server = NULL;
+	}
 	if (server != NULL) {
 		httpd_stop(server);
 		server = NULL;
@@ -513,6 +563,7 @@ void editor_init(void)
 	portal_active = false;
 	netif_ready = false;
 	server = NULL;
+	dns_server = NULL;
 }
 
 void editor_toggle(void)

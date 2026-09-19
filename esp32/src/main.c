@@ -104,6 +104,21 @@ static uint8_t out_ring[OUT_RING_SIZE];
 static volatile uint16_t out_head;
 static volatile uint16_t out_tail;
 static TaskHandle_t ble_tx_task_handle;
+static TaskHandle_t editor_control_task_handle;
+
+/* Private internal-UART command emitted by the STM32 after PROGRAM has been
+ * held for two seconds.  0x7D is the non-commercial manufacturer ID. */
+static bool editor_control_message(const uint8_t *message, size_t len)
+{
+	static const uint8_t command[] = {
+		0xf0, 0x7d, 'M', 'P', 'K', 0x01, 0xf7
+	};
+	if (len != sizeof(command) || memcmp(message, command, sizeof(command)) != 0)
+		return false;
+	if (editor_control_task_handle != NULL)
+		xTaskNotifyGive(editor_control_task_handle);
+	return true;
+}
 
 static uint8_t midi_message_size(uint8_t status)
 {
@@ -393,10 +408,12 @@ static void uart_parser_byte(midi_parser_t *parser, uint8_t byte)
 			return;
 		}
 		if (byte == 0xf7u) {
-			/* The editor taps the stream; it never consumes it, so a
-			 * reply the browser asked for still reaches the BLE host. */
-			sysex_bridge_offer(parser->sysex, parser->sysex_len);
-			out_push(parser->sysex, parser->sysex_len);
+			/* The PROGRAM-hold command is local to the keyboard/ESP link.
+			 * Other SysEx is tapped for the editor but still reaches BLE. */
+			if (!editor_control_message(parser->sysex, parser->sysex_len)) {
+				sysex_bridge_offer(parser->sysex, parser->sysex_len);
+				out_push(parser->sysex, parser->sysex_len);
+			}
 			parser->sysex_len = 0;
 			parser->in_sysex = false;
 		}
@@ -808,7 +825,7 @@ static void status_led_init(void) {}
  * reading it here is safe. Debounced by requiring several agreeing samples
  * rather than a timer, since nothing else depends on the latency.
  */
-static void editor_button_task(void *param)
+static void editor_control_task(void *param)
 {
 	(void)param;
 	gpio_config_t config = {
@@ -823,7 +840,12 @@ static void editor_button_task(void *param)
 	bool pressed = false;
 	uint8_t agree = 0;
 	while (true) {
-		vTaskDelay(pdMS_TO_TICKS(50));
+		uint32_t requests = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
+		while (requests-- != 0u) {
+			ESP_LOGI(TAG, "PROGRAM held: %s editor portal",
+			         editor_active() ? "stopping" : "starting");
+			editor_toggle();
+		}
 		bool now = gpio_get_level(EDITOR_BUTTON_GPIO) == 0; /* active low */
 		if (now == pressed) {
 			agree = 0;
@@ -852,7 +874,8 @@ void app_main(void)
 	status_led_init();
 	editor_init();
 	midi_uart_init();
-	xTaskCreate(editor_button_task, "editor-btn", 3072, NULL, 4, NULL);
+	xTaskCreate(editor_control_task, "editor-ctl", 3072, NULL, 4,
+	            &editor_control_task_handle);
 	ESP_ERROR_CHECK(nimble_port_init());
 
 	ble_hs_cfg.reset_cb = ble_on_reset;

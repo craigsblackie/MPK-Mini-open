@@ -1,0 +1,37 @@
+CONFIG_IDF_TARGET="esp32c3"
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+# This is a peripheral only; the scanning roles cost flash and RAM.
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_GATT_SERVER=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=256
+CONFIG_BT_NIMBLE_SM_LEGACY=y
+CONFIG_BT_NIMBLE_SM_SC=y
+# Keep bonds across power cycles: the bridge is powered by the keyboard, so it
+# reboots every time the MPK is unplugged. Without this the host must re-pair.
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
+# Headroom for aggregated notifications; the default 12 blocks is tight when a
+# SysEx dump and live playing overlap.
+CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT=24
+# WiFi is used only by the on-demand editor portal (see editor.c). It
+# shares the one 2.4 GHz radio with BLE, so software coexistence must be
+# on; without it, bringing up the AP disrupts the MIDI link.
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+# The editor page is served from flash and the AP carries one browser, so
+# trim the default buffer counts back toward what that actually needs.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+# Must leave room for the HTTP server: it needs max_open_sockets (4, set in
+# editor.c) plus 3 internal sockets, and refuses to start if they do not fit.
+CONFIG_LWIP_MAX_SOCKETS=8
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
