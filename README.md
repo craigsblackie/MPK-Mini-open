@@ -115,6 +115,22 @@ Do not flash either image at `0x08000000`; that would overwrite the retained
 updater. The program store at `0x08007800` sits outside both images and
 survives every update.
 
+### Updating without the bridge
+
+`stm32/tools/upload.py` talks the same protocol straight down the keyboard's
+own USB MIDI port. Useful on a bench, when the ESP32 is not fitted, and when
+the bridge itself is what is being worked on.
+
+```bash
+stm32/tools/upload.py auto query
+stm32/tools/upload.py auto write stm32/build/mpk-mini-open.bin
+stm32/tools/upload.py auto read  backup.bin
+```
+
+It handles the restart into recovery for you, reconnecting after the keyboard
+re-enumerates, and verifies a download against the checksum the keyboard
+reports.
+
 ### Tests
 
 ```bash
@@ -125,7 +141,9 @@ Host-side, no hardware. Covers the velocity curves, the PROGRAM hold, and the
 firmware transfer — including that an upload interrupted at **any** chunk
 boundary never leaves a bootable half-image, that a CRC mismatch refuses to
 commit, and that the boot gate rejects wrong magic, torn trailers, single-bit
-flips and bad vector tables. The transfer code reaches flash only through
+flips and bad vector tables. `ota.c` goes into both firmwares and behaves
+differently in each, so it is built and tested twice: as recovery, which does
+the transfer, and as the application, which must refuse it and hand over. The transfer code reaches flash only through
 `flash.h`, so it runs against an array that enforces what NOR flash enforces:
 erased bytes read `0xff`, programming only clears bits, and writing to an
 unerased halfword fails.
@@ -206,9 +224,22 @@ use the **Firmware** panel. It shows what is installed on each side.
 **Uploading.** The keyboard's image crosses at 31250 baud — the MIDI rate the
 UART runs at — so a 14 KB image takes about six seconds. The browser finishes
 pushing it into the socket long before that, so the page polls for the real
-progress rather than showing an upload bar that would be a lie. Either update
-can be interrupted without bricking anything: the keyboard falls back to
-recovery and you simply upload again, and the bridge's new image boots on
+progress rather than showing an upload bar that would be a lie.
+
+**The keyboard restarts into recovery partway through, and that is normal.**
+The application executes from the slot an update has to erase, and a Cortex-M3
+cannot run from flash that is being erased — there would be nothing to come
+back to. So the application does not attempt the transfer. It gives up its own
+bootability and resets; the loader then finds no valid application and runs
+recovery, which lives in the resident region and can rewrite the slot safely.
+The bridge follows it there automatically and starts again. What you see is
+the pad lights change to the recovery sweep for a few seconds, then the new
+firmware boot. There is only one application slot — 64 KiB of flash does not
+hold two — so giving up the installed image before its replacement arrives is
+unavoidable; recovery is what makes that safe rather than frightening.
+
+Either update can be interrupted without bricking anything: the keyboard stays
+in recovery and you simply upload again, and the bridge's new image boots on
 probation and is rolled back by the bootloader if it never reports itself
 healthy.
 
@@ -222,6 +253,18 @@ overwriting a build you might want back.
 A file offered to the wrong processor is refused before anything is erased:
 ESP-IDF images start with `0xe9`, STM32 images start with a stack pointer in
 SRAM, and each endpoint checks for the other's signature.
+
+**Robustness.** A transfer is thousands of request/reply exchanges where the
+editor previously made one, which turns rare faults into reliable ones. Two
+show up at that rate and are handled rather than wished away. The keyboard's
+USB MIDI OUT endpoint can be left unable to receive — `STAT_RX` stuck at NAK
+with no arrival pending — after which the firmware runs perfectly and is
+simply deaf; `usb_poll()` now detects exactly that state and re-arms it. And
+because anything the host was delivering at that moment is discarded, both
+senders retry a message that draws no reply at all. A refusal is never
+retried, only silence; every sub-command is either idempotent or
+resynchronises from the offset the keyboard echoes back, so asking again is
+correct rather than hopeful.
 
 ---
 

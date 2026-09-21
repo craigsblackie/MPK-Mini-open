@@ -17,23 +17,33 @@ transport_test: transport_test.c ../src/transport.c ../include/transport.h
 # systick.h and one reset hook, all of which ota_test.c supplies -- so the
 # update path that decides whether a unit boots is exercised here rather
 # than only on hardware.
-ota_test: ota_test.c ../src/ota.c ../src/app_image.c ../src/crc32.c ../src/sevenbit.c \
-          ../include/ota.h ../include/otamap.h ../include/otaproto.h
-	$(CC) $(CFLAGS) ota_test.c ../src/ota.c ../src/app_image.c ../src/crc32.c \
-	  ../src/sevenbit.c -o $@
+OTA_SRCS = ../src/ota.c ../src/app_image.c ../src/crc32.c ../src/sevenbit.c
+OTA_DEPS = ota_test.c $(OTA_SRCS) ../include/ota.h ../include/otamap.h ../include/otaproto.h
+
+# ota.c is compiled into both firmwares and behaves differently in each,
+# so it is tested as both. The recovery build does the transfer; the
+# application build must refuse it, because it runs from the slot an
+# update erases.
+ota_test: $(OTA_DEPS)
+	$(CC) $(CFLAGS) -DRECOVERY_BUILD ota_test.c $(OTA_SRCS) -o $@
+
+ota_app_test: $(OTA_DEPS)
+	$(CC) $(CFLAGS) ota_test.c $(OTA_SRCS) -o $@
 
 program_hold_test: program_hold_test.c ../src/program_hold.c ../include/program_hold.h
 	$(CC) $(CFLAGS) program_hold_test.c ../src/program_hold.c -o $@
 
-check: velocity_test transport_test program_hold_test ota_test
+check: velocity_test transport_test program_hold_test ota_test ota_app_test
 	./velocity_test
 	./transport_test
 	@echo
 	./program_hold_test
 	@echo
 	./ota_test
+	@echo
+	./ota_app_test
 
 clean:
-	rm -f velocity_test transport_test program_hold_test ota_test
+	rm -f velocity_test transport_test program_hold_test ota_test ota_app_test
 
 .PHONY: check clean

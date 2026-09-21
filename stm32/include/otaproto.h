@@ -64,6 +64,13 @@
 #define OTA_STATUS_CRC       4  /* image did not match the stated CRC */
 #define OTA_STATUS_ENCODING  5  /* payload was not valid 7-in-8 packing */
 #define OTA_STATUS_SEQUENCE  6  /* chunk offset was not the expected one */
+/*
+ * Not an error: the application cannot rewrite the slot it is executing
+ * from, so it has invalidated itself and is restarting into recovery,
+ * which runs from the resident region and can. The sender waits for it
+ * to come back and starts the transfer again.
+ */
+#define OTA_STATUS_REBOOTING 7
 
 /*
  * Largest raw chunk carried by one OTA_SUB_DATA message: 112 bytes,

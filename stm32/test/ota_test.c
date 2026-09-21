@@ -12,6 +12,13 @@
  * are 0xff, programming can only clear bits, and a write to an unerased
  * halfword fails -- so a test that passes here is not passing because
  * the stand-in was more forgiving than the hardware.
+ *
+ * ota.c is built into two different firmwares and behaves differently in
+ * each, so this file is compiled twice to match. With RECOVERY_BUILD it
+ * is the recovery image, which does the real transfer, and everything
+ * below exercises that. Without it, it is the application -- which
+ * executes from the slot an update erases and therefore must refuse to
+ * try -- and only the handover test runs.
  */
 #include <assert.h>
 #include <stdio.h>
@@ -482,7 +489,9 @@ static void test_message_layer(void)
 	CHECK(declared == 1u + 1u + OTA_QUERY_EXTRA);
 
 	CHECK(reply[9] == OTA_PROTOCOL_VERSION);
-	CHECK(reply[10] == OTA_MODE_APP);
+	/* Compiled here as the recovery image, and it must say so -- the
+	 * bridge uses this to know which one it is talking to. */
+	CHECK(reply[10] == OTA_MODE_RECOVERY);
 
 	/* An unknown sub-command is answered, not ignored: a sender must
 	 * never be left waiting on a reply that is not coming. */
@@ -590,6 +599,70 @@ static void test_query_reports_what_is_installed(void)
 	printf("  the query reports the installed length and CRC, prefix unchanged\n");
 }
 
+/*
+ * The application build refuses to do a transfer at all.
+ *
+ * It executes from the slot an update erases, and a Cortex-M3 cannot run
+ * from flash that is being erased. So it invalidates itself and reboots
+ * into recovery instead. This suite compiles the application variant of
+ * ota.c (RECOVERY_BUILD is not defined here), which is exactly the one
+ * that must behave this way.
+ */
+/* Put an image in the slot the way an SWD flash would, without going
+ * through the protocol -- which is the thing under test here. */
+static void install_directly(const uint8_t *img, uint32_t len)
+{
+	memcpy(at(APP_SLOT_BASE), img, len);
+	uint32_t crc = crc32_compute(img, len);
+	uint8_t trailer[APP_TRAILER_SIZE];
+	uint32_t magic = APP_TRAILER_MAGIC, inverse = ~crc;
+	for (unsigned i = 0; i < 4; i++) {
+		trailer[i]       = (uint8_t)(magic >> (8u * i));
+		trailer[4u + i]  = (uint8_t)(len >> (8u * i));
+		trailer[8u + i]  = (uint8_t)(crc >> (8u * i));
+		trailer[12u + i] = (uint8_t)(inverse >> (8u * i));
+	}
+	memcpy(at(APP_TRAILER_BASE), trailer, sizeof trailer);
+}
+
+static void test_application_hands_over_to_recovery(void)
+{
+	reset_world();
+
+	/* Start from a valid installed image, the normal state of a
+	 * working keyboard. */
+	install_directly(image, image_len);
+	CHECK(app_image_valid());
+
+	/* A BEGIN is answered with "restarting", not with success. */
+	CHECK(send_begin(image_len) == OTA_STATUS_REBOOTING);
+
+	/* It has given up its own bootability, so the loader will choose
+	 * recovery -- which is the point. */
+	CHECK(!app_image_valid());
+	CHECK(ota_reboot_pending());
+
+	/* And it must not have started accepting data it cannot write. */
+	uint32_t received = 0;
+	CHECK(send_chunk(0, image, 112, &received) == OTA_STATUS_STATE);
+
+	/* The reset follows once the reply has had time to drain. */
+	reset_count = 0;
+	ota_process();
+	CHECK(reset_count == 0);
+	fake_millis += 1000;
+	ota_process();
+	CHECK(reset_count == 1);
+
+	/* A nonsense length is still rejected before anything is erased. */
+	reset_world();
+	install_directly(image, image_len);
+	CHECK(send_begin(APP_SLOT_SIZE + 2u) == OTA_STATUS_RANGE);
+	CHECK(app_image_valid()); /* still bootable: nothing was given up */
+
+	printf("  the application hands the transfer to recovery instead of erasing itself\n");
+}
+
 static void test_real_image_if_present(void)
 {
 	FILE *f = fopen("../build/mpk-mini-open.bin", "rb");
@@ -628,7 +701,14 @@ static void test_real_image_if_present(void)
 int main(void)
 {
 	build_image();
-	printf("firmware transfer:\n");
+
+#ifndef RECOVERY_BUILD
+	printf("firmware transfer, application build:\n");
+	test_application_hands_over_to_recovery();
+	printf("all application-build tests passed\n");
+	return 0;
+#else
+	printf("firmware transfer, recovery build:\n");
 	test_sevenbit_roundtrip();
 	test_crc32_known_vectors();
 	test_complete_upload_boots();
@@ -644,4 +724,5 @@ int main(void)
 	test_real_image_if_present();
 	printf("all firmware-transfer tests passed\n");
 	return 0;
+#endif
 }

@@ -92,20 +92,35 @@ static inline __IO uint16_t *btable_count_rx(uint8_t ep)
 	return pma(BTABLE_OFFSET + ep * 8u + 6u);
 }
 
+/*
+ * The invariant bits of an endpoint register: both CTR flags, SETUP,
+ * EP_TYPE, EP_KIND and the endpoint address. This is ST's own
+ * USB_EPREG_MASK, and getting it right matters more than it looks.
+ *
+ * CTR_RX and CTR_TX are write-0-to-clear, so writing 1 leaves them
+ * alone. The four toggle fields (STAT_RX, STAT_TX, DTOG_RX, DTOG_TX)
+ * are write-1-to-toggle, so they must be written as 0 unless a change
+ * is intended. Any mask that drops a CTR bit therefore *clears* it as a
+ * side effect of touching something else -- and clearing CTR_RX behind
+ * the driver's back loses an arrived packet completely: it is never
+ * read out, STAT_RX is never set back to VALID, and the endpoint NAKs
+ * for ever while the firmware carries on none the wiser. That is a
+ * keyboard that is running perfectly and has simply gone deaf.
+ */
+#define USB_EPREG_MASK 0x8F8Fu
+
 static void ep_set_stat_tx(uint8_t ep, uint32_t stat)
 {
 	uint16_t r = USB_EPR(ep);
 	uint32_t toggle = (r ^ (stat << 4)) & 0x0030u; /* STAT_TX is bits [5:4] */
-	USB_EPR(ep) = (uint16_t)((r & 0x870Fu) | 0x8000u | toggle);
-	/* preserve CTR_RX/CTR_TX(write-0-to-clear, so keep as 1),
-	 * EP_TYPE, EA; toggle only STAT_TX via the write-1-to-toggle bits */
+	USB_EPR(ep) = (uint16_t)((r & USB_EPREG_MASK) | toggle);
 }
 
 static void ep_set_stat_rx(uint8_t ep, uint32_t stat)
 {
 	uint16_t r = USB_EPR(ep);
 	uint32_t toggle = (r ^ (stat << 12)) & 0x3000u; /* STAT_RX is bits [13:12] */
-	USB_EPR(ep) = (uint16_t)((r & 0x078Fu) | 0x0080u | toggle);
+	USB_EPR(ep) = (uint16_t)((r & USB_EPREG_MASK) | toggle);
 }
 
 static volatile uint8_t usb_address_pending;
@@ -305,6 +320,36 @@ void usb_poll(void)
 {
 	uint16_t istr = USB_ISTR_REG;
 
+	/*
+	 * Re-arm the MIDI OUT endpoint if it has been left unable to
+	 * receive.
+	 *
+	 * STAT_RX = NAK with CTR_RX clear means a packet was taken and the
+	 * endpoint was never set back to VALID: the host can no longer
+	 * deliver anything, and nothing will ever wake it, so the firmware
+	 * runs on perfectly while deaf. It is reachable through the
+	 * write-0-to-clear behaviour of the CTR flags, where any register
+	 * write with a mask that omits CTR_RX clears an arrival that has
+	 * not been serviced yet (see USB_EPREG_MASK). The masks here are
+	 * correct now, and this has still been observed on hardware during
+	 * sustained transfers, so the exact remaining path is not
+	 * understood and this is a deliberate backstop rather than a fix
+	 * for a diagnosed cause.
+	 *
+	 * It cannot misfire. A packet waiting to be read has CTR_RX set,
+	 * and an endpoint that is ready has STAT_RX = VALID; the only state
+	 * it touches is the one nothing else can leave. The window between
+	 * clearing CTR_RX and re-arming below does look like this, but it
+	 * lies inside a single usb_poll() call, and this runs before any of
+	 * it.
+	 */
+	if (usb_configured) {
+		uint16_t ep1 = USB_EPR(1);
+		if (((ep1 >> 12) & 0x3u) == USB_EP_STAT_NAK && !(ep1 & (1u << 15))) {
+			ep_set_stat_rx(1, USB_EP_STAT_VALID);
+		}
+	}
+
 	if (istr & USB_ISTR_RESET) {
 		USB_ISTR_REG = (uint16_t)~USB_ISTR_RESET;
 		usb_reset_endpoints();
@@ -316,14 +361,14 @@ void usb_poll(void)
 		if (ep == 0) {
 			uint16_t r = USB_EPR(0);
 			if (r & (1u << 15)) { /* CTR_RX */
-				USB_EPR(0) = (uint16_t)(r & 0x078Fu & ~(1u << 15));
+				USB_EPR(0) = (uint16_t)((r & USB_EPREG_MASK) & ~(1u << 15));
 				if (r & (1u << 11)) { /* SETUP bit */
 					handle_setup();
 				}
 				ep_set_stat_rx(0, USB_EP_STAT_VALID);
 			}
 			if (r & (1u << 7)) { /* CTR_TX */
-				USB_EPR(0) = (uint16_t)(USB_EPR(0) & 0x078Fu & ~(1u << 7));
+				USB_EPR(0) = (uint16_t)((USB_EPR(0) & USB_EPREG_MASK) & ~(1u << 7));
 				if (usb_address_pending) {
 					USB_DADDR_REG = (uint16_t)(0x80u | usb_address_value);
 					usb_address_pending = 0;
@@ -335,7 +380,7 @@ void usb_poll(void)
 		} else if (ep == 1) {
 			uint16_t r = USB_EPR(1);
 			if (r & (1u << 15)) { /* CTR_RX: incoming MIDI on EP1 OUT */
-				USB_EPR(1) = (uint16_t)(r & 0x078Fu & ~(1u << 15));
+				USB_EPR(1) = (uint16_t)((r & USB_EPREG_MASK) & ~(1u << 15));
 
 				/* COUNT_RX's low 10 bits are the actual
 				 * received byte count; upper bits are the
@@ -351,7 +396,7 @@ void usb_poll(void)
 				ep_set_stat_rx(1, USB_EP_STAT_VALID);
 			}
 			if (r & (1u << 7)) { /* CTR_TX: previous MIDI send completed */
-				USB_EPR(1) = (uint16_t)(USB_EPR(1) & 0x078Fu & ~(1u << 7));
+				USB_EPR(1) = (uint16_t)((USB_EPR(1) & USB_EPREG_MASK) & ~(1u << 7));
 			}
 		}
 	}

@@ -27,14 +27,14 @@ editor_test: editor_test.c ../src/editor.c ../src/sysex_bridge.h $(STUBS)
 	  -DFIRMWARE_PROGRAM_C='"$(FIRMWARE_PROGRAM_C)"' editor_test.c -o $@
 
 # Both ends of the firmware transfer, for real: the bridge's sender from
-# ../src and the keyboard's receiver from ../../stm32/src, with an
+# ../main and the keyboard's receiver from ../../stm32/src, with an
 # array standing in for the STM32's flash. The messages crossing the
 # harness are the bytes that would cross the UART.
 FIRMWARE_SRC = ../../stm32/src
 firmware_update_test: firmware_update_test.c ../src/firmware_update.c \
                       $(FIRMWARE_SRC)/ota.c $(FIRMWARE_SRC)/app_image.c \
                       $(FIRMWARE_SRC)/crc32.c $(FIRMWARE_SRC)/sevenbit.c $(STUBS)
-	$(CC) $(CFLAGS) -I../../stm32/include firmware_update_test.c \
+	$(CC) $(CFLAGS) -I../../stm32/include -DRECOVERY_BUILD firmware_update_test.c \
 	  $(FIRMWARE_SRC)/ota.c $(FIRMWARE_SRC)/app_image.c \
 	  $(FIRMWARE_SRC)/crc32.c $(FIRMWARE_SRC)/sevenbit.c -o $@
 

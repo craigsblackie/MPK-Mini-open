@@ -104,6 +104,14 @@ void ota_reset_system(void) { keyboard_resets++; }
  * that is unplugged or not running firmware that answers.
  */
 static bool keyboard_online = true;
+/*
+ * Models a keyboard running the application rather than recovery. The
+ * real one answers BEGIN with OTA_STATUS_REBOOTING, invalidates itself
+ * and resets; here the first BEGIN does that and the reset flips it into
+ * recovery, so the bridge's retry has something that will accept the
+ * transfer -- which is the behaviour being tested.
+ */
+static bool keyboard_in_app;
 static uint8_t captured_reply[SYSEX_BRIDGE_MAX];
 static size_t captured_len;
 static unsigned messages_sent;
@@ -141,7 +149,28 @@ size_t sysex_bridge_request(const uint8_t *request, size_t request_len,
 
 	captured_len = 0;
 	keyboard_millis += 50;
-	ota_handle_message(request, request_len, request[2]);
+
+	if (keyboard_in_app) {
+		uint8_t sub = request[7];
+		if (sub == OTA_SUB_QUERY) {
+			/* Same reply as recovery's, but saying "application". */
+			ota_handle_message(request, request_len, request[2]);
+			if (captured_len > 10) captured_reply[10] = OTA_MODE_APP;
+		} else if (sub == OTA_SUB_BEGIN) {
+			/* Hand over: give up bootability and restart. */
+			flash_erase_page(APP_TRAILER_BASE);
+			keyboard_in_app = false;
+			keyboard_resets++;
+			uint8_t reply_msg[] = {0xf0, 0x47, request[2], 0x7c, OTA_CMD,
+			                       0x00, 0x02, OTA_SUB_BEGIN,
+			                       OTA_STATUS_REBOOTING, 0xf7};
+			ota_emit(reply_msg, sizeof reply_msg);
+		} else {
+			ota_handle_message(request, request_len, request[2]);
+		}
+	} else {
+		ota_handle_message(request, request_len, request[2]);
+	}
 
 	size_t out = captured_len < reply_cap ? captured_len : reply_cap;
 	memcpy(reply, captured_reply, out);
@@ -272,6 +301,7 @@ static void reset_world(void)
 {
 	memset(fake_flash, 0xff, sizeof fake_flash);
 	keyboard_online = true;
+	keyboard_in_app = false;
 	keyboard_millis = 1000;
 	keyboard_resets = 0;
 	messages_sent = 0;
@@ -305,7 +335,7 @@ static void test_query_agrees(void)
 	CHECK(keyboard_query(&info));
 	CHECK(info.present);
 	CHECK(info.protocol == OTA_PROTOCOL_VERSION);
-	CHECK(info.mode == OTA_MODE_APP);
+	CHECK(info.mode == OTA_MODE_RECOVERY);
 	CHECK(info.slot_size == APP_SLOT_SIZE);
 	CHECK(info.chunk_bytes == OTA_CHUNK_BYTES);
 	printf("  the bridge reads back the slot size and chunk size the keyboard reports\n");
@@ -609,6 +639,35 @@ static void test_bridge_download(void)
 	       (unsigned)expected);
 }
 
+/*
+ * Updating a keyboard that is actually working.
+ *
+ * The application cannot rewrite the slot it runs from, so it hands the
+ * transfer to recovery and restarts. That is the path every update to a
+ * healthy unit takes, so the bridge has to follow it through rather than
+ * reporting the handover as a failure -- which is precisely what it did
+ * before this was handled, and what made uploads look broken while the
+ * keyboard was playing.
+ */
+static void test_update_while_application_is_running(void)
+{
+	reset_world();
+	keyboard_in_app = true;
+
+	/* Something valid is installed and the unit is playing. */
+	struct keyboard_info before;
+	CHECK(keyboard_query(&before));
+	CHECK(before.mode == OTA_MODE_APP);
+
+	keyboard_push(image, image_len);
+
+	CHECK(progress.phase == PHASE_DONE);
+	CHECK(keyboard_resets >= 1);          /* it restarted into recovery */
+	CHECK(app_image_valid());             /* and the new image landed */
+	CHECK(memcmp(at(APP_SLOT_BASE), image, image_len) == 0);
+	printf("  an update to a running keyboard goes through its restart into recovery\n");
+}
+
 static void test_status_endpoint(void)
 {
 	reset_world();
@@ -617,7 +676,7 @@ static void test_status_endpoint(void)
 	CHECK(strstr(last_body, "\"version\":\"1.0.0\"") != NULL);
 	CHECK(strstr(last_body, "\"slot\":\"ota_0\"") != NULL);
 	CHECK(strstr(last_body, "\"present\":true") != NULL);
-	CHECK(strstr(last_body, "\"mode\":\"app\"") != NULL);
+	CHECK(strstr(last_body, "\"mode\":\"recovery\"") != NULL);
 
 	char expected[64];
 	snprintf(expected, sizeof expected, "\"slotSize\":%u", (unsigned)APP_SLOT_SIZE);
@@ -677,6 +736,7 @@ int main(void)
 	test_keyboard_download();
 	test_download_reports_what_is_installed();
 	test_bridge_download();
+	test_update_while_application_is_running();
 	test_real_images_if_present();
 	printf("all firmware-update tests passed\n");
 	return 0;

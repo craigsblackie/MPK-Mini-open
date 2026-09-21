@@ -31,7 +31,7 @@ void ota_reset_system(void);
  * the 31250-baud UART before the reset takes the link down. */
 #define OTA_REBOOT_DELAY_MS 300u
 
-enum { STATE_IDLE, STATE_RECEIVING, STATE_COMMITTED };
+enum { STATE_IDLE, STATE_RECEIVING, STATE_COMMITTED, STATE_REBOOTING };
 
 static uint8_t state;
 static uint32_t expected_len;
@@ -57,7 +57,7 @@ uint32_t ota_received(void)
 
 bool ota_reboot_pending(void)
 {
-	return state == STATE_COMMITTED;
+	return state == STATE_COMMITTED || state == STATE_REBOOTING;
 }
 
 /* Fixed-width 7-bit digits, most significant first -- the same shape the
@@ -100,6 +100,29 @@ uint8_t ota_begin(const uint8_t *payload, size_t len)
 	if (length < APP_MIN_SIZE || length > APP_SLOT_SIZE || (length & 1u) != 0u)
 		return OTA_STATUS_RANGE;
 
+#ifndef RECOVERY_BUILD
+	/*
+	 * The application lives in the slot an update has to erase, and a
+	 * Cortex-M3 cannot execute from flash while that flash is being
+	 * erased -- the interface stalls the bus, and there would be
+	 * nothing to come back to afterwards. So the application does not
+	 * attempt the transfer at all. It erases its own trailer, which
+	 * hands the decision to the loader, and restarts; the loader then
+	 * finds no valid application and runs recovery, which lives in the
+	 * resident region and can rewrite the slot safely.
+	 *
+	 * Giving up the installed image before the replacement has arrived
+	 * is unavoidable: there is only one application slot, and 64 KiB of
+	 * flash does not hold two. Recovery is the safety net that makes
+	 * that acceptable -- the unit still enumerates, still answers, and
+	 * the upload simply runs again.
+	 */
+	if (!erase_trailer()) return OTA_STATUS_FLASH;
+	state = STATE_REBOOTING;
+	reboot_at = systick_millis() + OTA_REBOOT_DELAY_MS;
+	return OTA_STATUS_REBOOTING;
+#else
+
 	/* Invalidate before touching the image. From here until a COMMIT
 	 * writes a fresh trailer, the loader sees no bootable app and stays
 	 * in recovery -- which is exactly what should happen if the power
@@ -112,6 +135,7 @@ uint8_t ota_begin(const uint8_t *payload, size_t len)
 	state = STATE_RECEIVING;
 	last_activity = systick_millis();
 	return OTA_STATUS_OK;
+#endif /* RECOVERY_BUILD */
 }
 
 uint8_t ota_data(const uint8_t *payload, size_t len, uint32_t *offset_out)
@@ -215,7 +239,7 @@ uint8_t ota_abort(void)
 
 void ota_process(void)
 {
-	if (state == STATE_COMMITTED) {
+	if (state == STATE_COMMITTED || state == STATE_REBOOTING) {
 		if ((int32_t)(systick_millis() - reboot_at) >= 0) ota_reset_system();
 		return;
 	}

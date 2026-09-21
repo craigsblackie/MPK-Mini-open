@@ -115,6 +115,7 @@ static const char *status_text(int status)
 	case OTA_STATUS_CRC:      return "the image arrived corrupted";
 	case OTA_STATUS_ENCODING: return "the keyboard could not decode a chunk";
 	case OTA_STATUS_SEQUENCE: return "a chunk arrived out of order";
+	case OTA_STATUS_REBOOTING: return "the keyboard is restarting into recovery";
 	default:                  return "the keyboard reported an unknown error";
 	}
 }
@@ -172,6 +173,32 @@ static int ota_exchange(uint8_t sub, const uint8_t *payload, size_t payload_len,
 	return reply[HEADER_LEN];
 }
 
+/*
+ * Retry a message that got no answer at all.
+ *
+ * A lost message is not a refused one. The keyboard's USB MIDI endpoint
+ * can briefly be left unable to receive, and although it recovers by
+ * itself, whatever was in flight at that moment is gone. Every
+ * sub-command used here is either idempotent or resynchronises from the
+ * offset the keyboard echoes back, so asking again is correct rather
+ * than merely hopeful. Only a total silence is retried; a real refusal
+ * is returned unchanged, because repeating it would not help.
+ */
+#define OTA_ATTEMPTS 3
+
+static int ota_exchange_retry(uint8_t sub, const uint8_t *payload, size_t payload_len,
+                              uint8_t *extra, size_t extra_cap, size_t *extra_len,
+                              uint32_t timeout_ms)
+{
+	int status = -1;
+	for (int attempt = 0; attempt < OTA_ATTEMPTS; attempt++) {
+		status = ota_exchange(sub, payload, payload_len, extra, extra_cap,
+		                      extra_len, timeout_ms);
+		if (status >= 0) return status;
+	}
+	return status;
+}
+
 struct keyboard_info {
 	bool present;
 	uint8_t protocol;
@@ -192,8 +219,8 @@ static bool keyboard_query(struct keyboard_info *out)
 	 * drop the installed-image fields at the end of it. */
 	uint8_t extra[OTA_QUERY_EXTRA];
 	size_t extra_len = 0;
-	int status = ota_exchange(OTA_SUB_QUERY, NULL, 0, extra, sizeof extra,
-	                          &extra_len, REPLY_TIMEOUT_MS);
+	int status = ota_exchange_retry(OTA_SUB_QUERY, NULL, 0, extra, sizeof extra,
+	                                &extra_len, REPLY_TIMEOUT_MS);
 	if (status != OTA_STATUS_OK || extra_len < OTA_QUERY_EXTRA_V1) return false;
 
 	out->present = true;
@@ -236,6 +263,26 @@ static const char *keyboard_image_problem(const uint8_t *image, uint32_t len,
 	return NULL;
 }
 
+/*
+ * How long to wait for the keyboard to come back up in recovery after it
+ * has handed the transfer over. It erases its trailer, replies, waits
+ * for that reply to drain, resets, and then re-enumerates -- comfortably
+ * under a second, but the budget is generous because the alternative is
+ * abandoning an update that was going to work.
+ */
+#define RECOVERY_WAIT_MS   8000
+#define RECOVERY_POLL_MS   250
+
+/* Wait for the keyboard to reappear running its recovery image. */
+static bool wait_for_recovery(struct keyboard_info *info)
+{
+	for (int waited = 0; waited < RECOVERY_WAIT_MS; waited += RECOVERY_POLL_MS) {
+		vTaskDelay(pdMS_TO_TICKS(RECOVERY_POLL_MS));
+		if (keyboard_query(info) && info->mode == OTA_MODE_RECOVERY) return true;
+	}
+	return false;
+}
+
 /* Drive a whole transfer. Reports through progress_finish() rather than
  * returning, because it runs on its own task well after the HTTP request
  * that started it has been answered. */
@@ -266,6 +313,27 @@ static void keyboard_push(const uint8_t *image, uint32_t len)
 	write_digits(payload, OTA_DIGITS_OFFSET, len);
 	int status = ota_exchange(OTA_SUB_BEGIN, payload, OTA_DIGITS_OFFSET,
 	                          NULL, 0, NULL, REPLY_TIMEOUT_MS);
+
+	/*
+	 * The application cannot rewrite the slot it runs from, so it hands
+	 * the job to recovery and restarts. That is the expected path for
+	 * every update to a working keyboard, not an error: wait for it to
+	 * come back and start again, this time talking to an image that can
+	 * actually do the work.
+	 */
+	if (status == OTA_STATUS_REBOOTING) {
+		progress.detail[0] = '\0';
+		ESP_LOGI(TAG, "keyboard restarting into recovery to accept the update");
+		if (!wait_for_recovery(&info)) {
+			progress_finish(PHASE_FAILED,
+			                "the keyboard did not come back up in recovery");
+			return;
+		}
+		write_digits(payload, OTA_DIGITS_OFFSET, len);
+		status = ota_exchange(OTA_SUB_BEGIN, payload, OTA_DIGITS_OFFSET,
+		                      NULL, 0, NULL, REPLY_TIMEOUT_MS);
+	}
+
 	if (status != OTA_STATUS_OK) {
 		progress_finish(PHASE_FAILED, "%s",
 		                status < 0 ? "the keyboard did not answer" : status_text(status));
@@ -284,6 +352,23 @@ static void keyboard_push(const uint8_t *image, uint32_t len)
 		size_t echo_len = 0;
 		status = ota_exchange(OTA_SUB_DATA, payload, OTA_DIGITS_OFFSET + encoded,
 		                      echo, sizeof echo, &echo_len, REPLY_TIMEOUT_MS);
+
+		if (status < 0) {
+			/* Silence: ask again. If the keyboard had in fact
+			 * written that chunk and only the reply was lost, the
+			 * repeat is refused as out of sequence -- and that
+			 * refusal carries how far it got, which is exactly the
+			 * confirmation that was missed. */
+			status = ota_exchange_retry(OTA_SUB_DATA, payload,
+			                            OTA_DIGITS_OFFSET + encoded,
+			                            echo, sizeof echo, &echo_len,
+			                            REPLY_TIMEOUT_MS);
+			if (status == OTA_STATUS_SEQUENCE && echo_len == OTA_DIGITS_OFFSET &&
+			    read_digits(echo, OTA_DIGITS_OFFSET) == offset + take) {
+				status = OTA_STATUS_OK;
+			}
+		}
+
 		if (status != OTA_STATUS_OK) {
 			progress_finish(PHASE_FAILED, "%s",
 			                status < 0 ? "the keyboard stopped answering mid-transfer"
@@ -358,8 +443,9 @@ static uint32_t keyboard_pull(uint8_t *out, uint32_t capacity, const char **erro
 		write_digits(&payload[OTA_DIGITS_OFFSET], OTA_DIGITS_COUNT, want);
 
 		size_t reply_len = 0;
-		int status = ota_exchange(OTA_SUB_READ, payload, sizeof payload,
-		                          reply, sizeof reply, &reply_len, REPLY_TIMEOUT_MS);
+		int status = ota_exchange_retry(OTA_SUB_READ, payload, sizeof payload,
+		                                reply, sizeof reply, &reply_len,
+		                                REPLY_TIMEOUT_MS);
 		if (status != OTA_STATUS_OK) {
 			*error = status < 0 ? "the keyboard stopped answering mid-download"
 			                    : status_text(status);

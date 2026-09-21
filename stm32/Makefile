@@ -19,8 +19,12 @@ SIZE = arm-none-eabi-size
 APP = mpk-mini-open
 RESIDENT = mpk-mini-resident
 
+# -MMD -MP records which headers each object used, so editing a header
+# rebuilds what depends on it. Without this a header-only change quietly
+# leaves stale objects in place and the resulting image is a mixture of
+# two builds -- which is exactly as confusing to debug as it sounds.
 CFLAGS = -mthumb -mcpu=cortex-m3 -Os -g3 -Wall -Wextra \
-         -ffreestanding -nostdlib -Iinclude
+         -ffreestanding -nostdlib -Iinclude -MMD -MP
 LDFLAGS = -nostdlib -Wl,--gc-sections
 
 # Sources shared by both images: the wire format, the flash primitives and
@@ -79,6 +83,8 @@ build/$(APP).bin: build/$(APP).elf
 build/$(RESIDENT).bin: build/$(RESIDENT).elf tools/patch_checksum.py
 	$(OBJCOPY) -O binary $< build/$(RESIDENT)-unsigned.bin
 	python3 tools/patch_checksum.py build/$(RESIDENT)-unsigned.bin $@
+
+-include $(APP_OBJS:.o=.d) $(RESIDENT_OBJS:.o=.d)
 
 clean:
 	rm -rf build
