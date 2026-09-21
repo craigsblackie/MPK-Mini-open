@@ -361,3 +361,18 @@ The ESP32-C3 is powered from the MPK's +5V rail via a diode to prevent power con
 ![Wiring Diagram](wiring.jpg)
 
 **Important**: Do **NOT** feed the ESP32's `3V3` pin from the MPK's 3.3V rail. Use the `5V` pin to allow the ESP32's onboard regulator to handle the load.
+
+---
+
+## 6. Licence
+
+MIT — see [LICENSE](LICENSE). Use it, change it, build on it, sell it; the
+one condition is that the copyright notice and permission notice stay with
+any copy or substantial portion, so credit travels with the code.
+
+Copyright (c) 2026 Craig S. Blackie.
+
+The firmware here is written from scratch. It is not AKAI code, and AKAI has
+nothing to do with this project; "MPK mini" is their trademark and is used
+only to say which instrument this runs on. It comes with no warranty — see
+the licence text — and flashing it is at your own risk.
