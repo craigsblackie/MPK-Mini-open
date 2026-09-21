@@ -31,6 +31,12 @@ CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
 # editor.c) plus 3 internal sockets, and refuses to start if they do not fit.
 CONFIG_LWIP_MAX_SOCKETS=8
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+# A freshly uploaded app boots on probation: if it does not reach
+# esp_ota_mark_app_valid_cancel_rollback() in main.c, the bootloader
+# reverts to the slot that was working. The bridge is powered by the
+# keyboard and has no console attached in normal use, so an app that
+# crashes early would otherwise need a USB cable and a laptop to undo.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

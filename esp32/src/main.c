@@ -18,8 +18,10 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "host/ble_att.h"
 #include "host/ble_gap.h"
@@ -87,6 +89,10 @@ static uint8_t own_addr_type;
 static uint16_t connection_handle = INVALID_HANDLE;
 static uint16_t midi_value_handle;
 static bool notifications_enabled;
+/* Set once the BLE host has synced and advertising has started. Used to
+ * decide that a freshly installed image is healthy; see
+ * confirm_running_image(). */
+static volatile bool ble_synced;
 
 typedef struct {
 	uint8_t running_status;
@@ -467,6 +473,33 @@ static void uart_parser_byte(midi_parser_t *parser, uint8_t byte)
 		uart_parser_emit(parser);
 }
 
+/*
+ * Two tasks write to this UART: the NimBLE host task, forwarding MIDI
+ * that arrived over BLE, and whatever task is running an editor request
+ * or a firmware transfer. uart_write_bytes() is not atomic between
+ * tasks, and the BLE path writes a byte at a time, so without this lock
+ * a single BLE-sourced byte can land in the middle of a SysEx message.
+ * The keyboard then sees a data byte with bit 7 set between F0 and F7,
+ * discards the whole message, and the sender times out waiting for a
+ * reply that was never going to come.
+ *
+ * The lock is held for a whole logical message rather than per write,
+ * because the BLE path emits a running-status expansion as several
+ * separate calls that must not be split either.
+ */
+static SemaphoreHandle_t uart_tx_lock;
+
+static void uart_lock(void)
+{
+	if (uart_tx_lock != NULL) xSemaphoreTake(uart_tx_lock, portMAX_DELAY);
+}
+
+static void uart_unlock(void)
+{
+	if (uart_tx_lock != NULL) xSemaphoreGive(uart_tx_lock);
+}
+
+/* Callers must hold the lock above. */
 static void uart_write_midi(const uint8_t *bytes, size_t len)
 {
 	if (len != 0) uart_write_bytes(MIDI_UART, bytes, len);
@@ -475,7 +508,9 @@ static void uart_write_midi(const uint8_t *bytes, size_t len)
 /* Used by sysex_bridge.c, which owns request/response but not the UART. */
 void midi_uart_send(const uint8_t *bytes, size_t len)
 {
+	uart_lock();
 	uart_write_midi(bytes, len);
+	uart_unlock();
 }
 
 /* A continued SysEx packet begins with the BLE header and then a MIDI data
@@ -497,7 +532,7 @@ static bool ble_midi_is_sysex_continuation(const uint8_t *packet, size_t len)
 /* Decode one complete BLE-MIDI characteristic value to ordinary serial MIDI.
  * Running status is expanded. A SysEx continuation packet has no timestamp
  * after its header; timestamps precede realtime bytes and EOX within SysEx. */
-static bool ble_midi_write_to_uart(const uint8_t *packet, size_t len)
+static bool ble_midi_write_to_uart_locked(const uint8_t *packet, size_t len)
 {
 	if (len < 2 || (packet[0] & 0x80u) == 0) return false;
 
@@ -576,6 +611,16 @@ static bool ble_midi_write_to_uart(const uint8_t *packet, size_t len)
 			running_status = 0;
 	}
 	return true;
+}
+
+/* Holds the UART lock across the whole packet. The decoder above has many
+ * early exits, so it stays exactly as it was and the lock is taken here. */
+static bool ble_midi_write_to_uart(const uint8_t *packet, size_t len)
+{
+	uart_lock();
+	bool ok = ble_midi_write_to_uart_locked(packet, len);
+	uart_unlock();
+	return ok;
 }
 
 static int midi_gatt_access(uint16_t conn_handle, uint16_t attr_handle,
@@ -715,6 +760,7 @@ static void ble_on_sync(void)
 		return;
 	}
 	advertise();
+	ble_synced = true;
 	ESP_LOGI(TAG, "advertising as MPK mini Open");
 }
 
@@ -760,6 +806,7 @@ static void midi_uart_init(void)
 		.flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
 		.source_clk = UART_SCLK_DEFAULT,
 	};
+	uart_tx_lock = xSemaphoreCreateMutex();
 	ESP_ERROR_CHECK(uart_driver_install(MIDI_UART, 1024, 512, 0, NULL, 0));
 	ESP_ERROR_CHECK(uart_param_config(MIDI_UART, &config));
 	ESP_ERROR_CHECK(uart_set_pin(MIDI_UART, MIDI_TX_GPIO, MIDI_RX_GPIO,
@@ -825,6 +872,34 @@ static void status_led_init(void) {}
  * reading it here is safe. Debounced by requiring several agreeing samples
  * rather than a timer, since nothing else depends on the latency.
  */
+/*
+ * Confirm a freshly installed image.
+ *
+ * With rollback enabled the bootloader runs a newly written slot on
+ * probation and reverts to the previous one unless the app marks itself
+ * valid. The test here is that the BLE host synced and started
+ * advertising, and that the app then kept running for a while -- which
+ * covers what a bridge with no console attached cannot recover from on
+ * its own: an image that panics during startup, or one whose radio never
+ * comes up. Nothing here waits on the keyboard, because the bridge only
+ * talks to it when the editor portal is open and a unit that is never
+ * opened would otherwise never confirm.
+ */
+#define CONFIRM_UPTIME_MS 15000
+static void confirm_running_image(void)
+{
+	const esp_partition_t *running = esp_ota_get_running_partition();
+	esp_ota_img_states_t state;
+	if (running == NULL) return;
+	if (esp_ota_get_state_partition(running, &state) != ESP_OK) return;
+	if (state != ESP_OTA_IMG_PENDING_VERIFY) return;
+
+	if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK)
+		ESP_LOGI(TAG, "new image on %s confirmed", running->label);
+	else
+		ESP_LOGW(TAG, "could not confirm the new image; it will be rolled back");
+}
+
 static void editor_control_task(void *param)
 {
 	(void)param;
@@ -839,8 +914,14 @@ static void editor_control_task(void *param)
 
 	bool pressed = false;
 	uint8_t agree = 0;
+	bool confirmed = false;
 	while (true) {
 		uint32_t requests = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
+		if (!confirmed && ble_synced &&
+		    esp_timer_get_time() > (int64_t)CONFIRM_UPTIME_MS * 1000) {
+			confirm_running_image();
+			confirmed = true;
+		}
 		while (requests-- != 0u) {
 			ESP_LOGI(TAG, "PROGRAM held: %s editor portal",
 			         editor_active() ? "stopping" : "starting");

@@ -6,6 +6,10 @@ The repository is organised into two main parts:
 - `stm32/`: The main keyboard firmware (STM32F102).
 - `esp32/`: The Bluetooth LE MIDI bridge (ESP32-C3).
 
+Both processors can be **updated and backed up from a web page the bridge
+hosts itself** — no debugger, no host software, no cable. See
+[Firmware updates](#3-firmware-updates).
+
 ---
 
 ## 1. STM32 Firmware (Keyboard)
@@ -17,28 +21,114 @@ This firmware is a from-scratch replacement for the application in the AKAI MPK 
 - **Extended Features**: Selectable velocity curves, SysEx editor support, and custom boot signature.
 - **BLE Integration**: Simultaneously supports USB MIDI and bidirectional BLE MIDI via an ESP32-C3 bridge.
 - **Arpeggiator**: Built-in arpeggiator with multiple modes and external MIDI clock support.
+- **Field updatable**: New firmware is uploaded over the MIDI link from the
+  bridge's web page, and the installed image can be downloaded back off the
+  keyboard for a backup.
 
-### Build and Flash
+### Flash layout
+
+The firmware builds as **two images**, and they are flashed differently.
+
+```
+0x08000000  stock AKAI updater                  8 KiB  untouched
+0x08002000  resident: loader + recovery app    22 KiB  SWD, once
+0x080077fe  stock updater's checksum halfword
+0x08007800  program store                       1 KiB
+0x08008000  application slot                   26 KiB  update target
+0x0800e800  application trailer                 1 KiB  update target
+```
+
+The stock AKAI updater validates an additive checksum over
+`0x08002000..0x080077fd` and jumps through the vector table at `0x08002000`.
+Anything in that region therefore cannot be rewritten in the field — a torn
+write there fails the stock checksum and strands the unit in an updater that
+only speaks USB. So that region holds the part that never changes (a small
+loader plus a minimal recovery application), and the real application lives
+above the program store, outside everything the stock updater inspects.
+
+On reset the loader checks the trailer — magic, length, and a CRC-32 over the
+whole image — plus the slot's first two vectors, and only then hands over. An
+update erases the trailer first and writes it last, so at every instant in
+between there is no bootable application and the loader stays in recovery.
+**An interrupted update cannot brick the keyboard.**
+
+**Recovery mode** plays nothing and sweeps a single light back and forth
+across the pad LEDs. It brings up USB MIDI, the ESP32 link and the SysEx
+layer — enough to be found and uploaded to. The PROGRAM hold still opens the
+editor there, which matters, because that is how you get an application back
+in. Holding **TAP TEMPO** at power-on forces recovery even when the installed
+application is valid; that is the way back from an image that passes its CRC
+but does not work.
+
+### Build
 **Requirements**: `arm-none-eabi-gcc` and `make`.
 
-**Build:**
 ```bash
 cd stm32
 make
 ```
 Outputs:
-- `stm32/build/mpk-mini-open.bin`: Application image for flashing.
-- `stm32/build/mpk-mini-open.elf`: Debug image.
+- `build/mpk-mini-open.bin` — the application, for `0x08008000`. This is what
+  the web page uploads.
+- `build/mpk-mini-open-trailer.bin` — 16 bytes for `0x0800e800`, needed only
+  when flashing the application over SWD. Over the air the keyboard writes
+  this itself, after checking the image.
+- `build/mpk-mini-resident.bin` — the loader and recovery application, for
+  `0x08002000`.
 
-**Flash:**
-If the original updater is present, flash only the application slot:
+Prebuilt copies of all three are in `stm32/releases/`, with `SHA256SUMS`.
+
+### Flash (first install, over SWD)
+
+The stock AKAI updater must already be present at `0x08000000..0x08001fff`.
+The resident image replaces whatever is currently at `0x08002000`, including
+an earlier single-image build of this firmware.
+
+```bash
+cd stm32
+openocd -f interface/cmsis-dap.cfg -f target/stm32f1x.cfg \
+  -c "adapter speed 1000" -c "init" -c "reset halt" \
+  -c "flash write_image erase build/mpk-mini-resident.bin 0x08002000 bin" \
+  -c "verify_image build/mpk-mini-resident.bin 0x08002000 bin" \
+  -c "reset run" -c "shutdown"
+```
+
+That alone leaves the unit in recovery, which is a working state — it
+enumerates over USB and answers the bridge. From there, upload
+`build/mpk-mini-open.bin` from the web page and the keyboard installs it
+itself. That is the path every later update takes.
+
+To flash the application over SWD instead, write the image **and its
+trailer**; without the trailer the loader has nothing to validate and stays
+in recovery.
+
 ```bash
 openocd -f interface/cmsis-dap.cfg -f target/stm32f1x.cfg \
   -c "adapter speed 1000" -c "init" -c "reset halt" \
-  -c "flash write_image erase stm32/build/mpk-mini-open.bin 0x08002000 bin" \
-  -c "verify_image stm32/build/mpk-mini-open.bin 0x08002000 bin" \
+  -c "flash write_image erase build/mpk-mini-open.bin 0x08008000 bin" \
+  -c "flash write_image erase build/mpk-mini-open-trailer.bin 0x0800e800 bin" \
+  -c "verify_image build/mpk-mini-open.bin 0x08008000 bin" \
   -c "reset run" -c "shutdown"
 ```
+
+Do not flash either image at `0x08000000`; that would overwrite the retained
+updater. The program store at `0x08007800` sits outside both images and
+survives every update.
+
+### Tests
+
+```bash
+cd stm32/test && make check
+```
+
+Host-side, no hardware. Covers the velocity curves, the PROGRAM hold, and the
+firmware transfer — including that an upload interrupted at **any** chunk
+boundary never leaves a bootable half-image, that a CRC mismatch refuses to
+commit, and that the boot gate rejects wrong magic, torn trailers, single-bit
+flips and bad vector tables. The transfer code reaches flash only through
+`flash.h`, so it runs against an array that enforces what NOR flash enforces:
+erased bytes read `0xff`, programming only clears bits, and writing to an
+unerased halfword fails.
 
 ---
 
@@ -54,13 +144,33 @@ This project turns an **ESP32-C3 SuperMini (HW-466AB)** into a bidirectional BLE
 ### Build and Flash
 **Requirements**: ESP-IDF (v6.0.3).
 
-**Build & Flash:**
 ```bash
 cd esp32
 idf.py set-target esp32c3
 idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
 ```
+
+`partitions.csv` declares **two application slots** plus `otadata`, so the
+bridge can update itself over WiFi. A partition table cannot be changed over
+the air, so a bridge running an older layout needs one last `idf.py flash`
+over USB-C to adopt it. `nvs` keeps its offset and size, so BLE pairings
+survive that.
+
+A prebuilt image is in `esp32/releases/`.
+
+### Tests
+
+```bash
+cd esp32/test && make check
+```
+
+Three suites against stub ESP-IDF and NimBLE headers. The BLE suite round-trips
+MIDI through the parser, queue and packet builder. The editor suite drives the
+HTTP handlers against a fake keyboard. The firmware-update suite runs **both
+real ends against each other** — the bridge's sender from `esp32/src` and the
+keyboard's receiver from `stm32/src` — so the two cannot disagree about the
+wire format without a test failing.
 
 ### Bringing-up Order
 1. **Flash the ESP32 alone** (unplugged from keyboard). It should advertise as `MPK mini Open`.
@@ -83,7 +193,39 @@ software.
 
 ---
 
-## 3. Hardware Setup & Wiring
+## 3. Firmware Updates
+
+Open the editor (hold **PROGRAM** for two seconds), join `MPK-mini-Open`, and
+use the **Firmware** panel. It shows what is installed on each side.
+
+| | Upload | Download |
+|---|---|---|
+| **Keyboard** | `stm32/build/mpk-mini-open.bin`, ~6 s | reads the installed image back |
+| **Bridge** | `esp32/build/mpk_mini_ble_midi.bin`, a few seconds | serves the image it is running |
+
+**Uploading.** The keyboard's image crosses at 31250 baud — the MIDI rate the
+UART runs at — so a 14 KB image takes about six seconds. The browser finishes
+pushing it into the socket long before that, so the page polls for the real
+progress rather than showing an upload bar that would be a lie. Either update
+can be interrupted without bricking anything: the keyboard falls back to
+recovery and you simply upload again, and the bridge's new image boots on
+probation and is rolled back by the bootloader if it never reports itself
+healthy.
+
+**Downloading.** You get back exactly the image that is installed. The
+keyboard's is read out over the MIDI link and checked against the CRC-32 the
+keyboard reports, so a truncated copy is refused rather than saved. The
+bridge serves its own running image at its real length, computed by walking
+the ESP32 image header — not the whole 1.9 MB partition. Take a copy before
+overwriting a build you might want back.
+
+A file offered to the wrong processor is refused before anything is erased:
+ESP-IDF images start with `0xe9`, STM32 images start with a stack pointer in
+SRAM, and each endpoint checks for the other's signature.
+
+---
+
+## 4. Hardware Setup & Wiring
 
 ### Signal Wiring (UART Link)
 Connect the STM32 and ESP32-C3 directly via TTL (3.3V logic).

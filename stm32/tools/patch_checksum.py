@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Patch the checksum expected by the retained stock MPK mini updater."""
+"""Patch the checksum expected by the retained stock MPK mini updater.
+
+Applies to the resident loader/recovery image, which is the one the stock
+updater validates and jumps to. The application image in the slot above
+the program store is outside that region and needs no patching -- see
+include/otamap.h.
+"""
 from pathlib import Path
 import sys
 

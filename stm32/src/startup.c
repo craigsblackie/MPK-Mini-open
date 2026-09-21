@@ -5,14 +5,24 @@
  * zero .bss, call main(). Written fresh against the generic
  * Cortex-M3/STM32F1 startup pattern (the same shape every STM32F1
  * project's startup file has) -- not copied from the original firmware.
+ *
+ * Shared by both images. They differ only in where their vector table
+ * lives -- the resident loader/recovery image at 0x08002000 where the
+ * stock updater jumps, the application in its own slot -- so the base
+ * comes from the build (VECTOR_BASE) and the initial stack value comes
+ * from the linker script, which knows whether its caller pops words off
+ * that stack before branching.
  */
 #include <stdint.h>
 
-extern uint32_t _handoff_stack;
+#ifndef VECTOR_BASE
+#error "VECTOR_BASE must be defined by the build"
+#endif
+
+extern uint32_t _vector_stack;
 extern uint32_t _etext, _sdata, _edata, _sbss, _ebss;
 
 #define SCB_VTOR (*(volatile uint32_t *)0xE000ED08u)
-#define APP_VECTOR_BASE 0x08002000u
 
 void Reset_Handler(void);
 static void Default_Handler(void);
@@ -31,7 +41,7 @@ void USB_LP_CAN1_RX0_IRQHandler(void) __attribute__((weak, alias("Default_Handle
 
 __attribute__((section(".isr_vector")))
 const void *const vector_table[] = {
-	&_handoff_stack,
+	&_vector_stack,
 	Reset_Handler,
 	NMI_Handler,
 	HardFault_Handler,
@@ -59,9 +69,11 @@ void Reset_Handler(void)
 {
 	uint32_t *src, *dst;
 
-	/* The stock updater remains at address zero, so relocate exceptions
-	 * before the application enables SysTick or USB interrupts. */
-	SCB_VTOR = APP_VECTOR_BASE;
+	/* Something else owns the vector table at address zero -- the stock
+	 * updater for the resident image, the resident loader for the
+	 * application -- so relocate exceptions before enabling SysTick or
+	 * USB interrupts. */
+	SCB_VTOR = VECTOR_BASE;
 
 	src = &_etext;
 	dst = &_sdata;

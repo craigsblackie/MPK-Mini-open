@@ -22,14 +22,36 @@
 #include "sysex.h"
 #include "usb.h"
 #include "midi_ring.h"
+#include "ota.h"
+#include "otaproto.h"
+#ifndef RECOVERY_BUILD
 #include "program.h"
 #include "pads.h"
 #include "keys.h"
 #include "arp.h"
+#endif
 
-#define SYSEX_MAX_LEN 128
+/*
+ * RECOVERY_BUILD compiles this file into the resident recovery image,
+ * where the program store, keys, pads and arp do not exist. What
+ * survives is the framing, the 'd' status reply, the identity probe and
+ * the 'f' firmware transfer -- everything the ESP32 needs to recognise
+ * the unit and push a new application into it. Keeping one copy of the
+ * wire format means recovery cannot drift from the real firmware in the
+ * one situation where that would be unrecoverable.
+ */
+
+/* An 'f' data chunk is the longest message either direction carries:
+ * 8-byte header, 4 offset digits, 128 encoded bytes and the F7. */
+#define SYSEX_MAX_LEN 192
 #define MSG_TOTAL_LEN 110 /* 'a'/'c': 8-byte header + 101-byte payload + F7 */
 #define HEADER_LEN 8
+
+#ifdef RECOVERY_BUILD
+/* The identity reply carries the current MIDI channel; recovery has no
+ * program store to read one from and always answers on channel 1. */
+static uint8_t program_channel(void) { return 0; }
+#endif
 
 static uint8_t sysex_buf[SYSEX_MAX_LEN];
 static uint16_t sysex_len;
@@ -86,6 +108,7 @@ static void pack_and_send(const uint8_t *msg, int len)
 	}
 }
 
+#ifndef RECOVERY_BUILD
 static void send_dump(uint8_t program_index)
 {
 	uint8_t msg[MSG_TOTAL_LEN];
@@ -121,6 +144,7 @@ static void send_bootstrap(void)
 	                   0x7F,0x02,0x00,0x00,0x00,0x64,0xF7};
 	pack_and_send(msg, sizeof msg);
 }
+#endif /* !RECOVERY_BUILD */
 
 static void send_editor_probe(void)
 {
@@ -151,7 +175,11 @@ static void send_status(void)
 	msg[4] = 'd';
 	msg[5] = 0x00;
 	msg[6] = 0x01;
+#ifdef RECOVERY_BUILD
+	msg[7] = 0; /* no program store here */
+#else
 	msg[7] = current_program;
+#endif
 	msg[8] = 0xF7;
 	pack_and_send(msg, 9);
 }
@@ -173,6 +201,7 @@ static void send_status(void)
  * 'j' and '`' -- see FIRMWARE_ANALYSIS.md's command table -- so a stock
  * editor will never emit it and this cannot shadow a real command.
  */
+#ifndef RECOVERY_BUILD
 #define SETTINGS_SUBCMD_READ 0
 #define SETTINGS_SUBCMD_WRITE 1
 #define SETTINGS_SUBCMD_STATS 2
@@ -214,6 +243,14 @@ static void send_settings(void)
 	msg[SETTINGS_MSG_LEN - 1] = 0xF7;
 	pack_and_send(msg, SETTINGS_MSG_LEN);
 }
+#endif /* !RECOVERY_BUILD */
+
+/* ota.c builds its own replies; this is how they reach the host, by the
+ * same USB-MIDI packing every other reply uses. */
+void ota_emit(const uint8_t *message, size_t len)
+{
+	pack_and_send(message, (int)len);
+}
 
 static void sysex_process(void)
 {
@@ -240,6 +277,16 @@ static void sysex_process(void)
 		send_status();
 		return;
 	}
+	if (cmd == OTA_CMD) {
+		/* The whole 'f' message layer lives in ota.c so that both this
+		 * firmware's tests and the ESP32's can drive the real framing
+		 * rather than a reimplementation of it. Replies come back out
+		 * through ota_emit() below. */
+		ota_handle_message(sysex_buf, sysex_len, last_id);
+		return;
+	}
+
+#ifndef RECOVERY_BUILD
 	if (cmd == 'j' && sysex_buf[5] == 0 && sysex_buf[6] == 2 &&
 	    sysex_buf[7] == 0x7f && sysex_buf[8] == 1) {
 		all_notes_off();
@@ -294,6 +341,7 @@ static void sysex_process(void)
 		 * unknown commands are likewise ignored. */
 		break;
 	}
+#endif /* !RECOVERY_BUILD */
 }
 
 static void handle_event(const uint8_t event[4])
@@ -311,7 +359,9 @@ void midi_input_byte(uint8_t byte)
 {
 	/* MIDI realtime bytes may legally occur inside a SysEx stream. */
 	if (byte >= 0xf8u) {
+#ifndef RECOVERY_BUILD
 		arp_midi_realtime(byte);
+#endif
 		return;
 	}
 	if (byte == 0xf0u) {

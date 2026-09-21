@@ -59,6 +59,31 @@
   .banner.show { display: block; }
   .banner.err { background: #3a211c; color: #f0b3a5; border: 1px solid #6d3a2e; }
   .banner.ok { background: #1c3328; color: #a8dcc0; border: 1px solid #2f5a44; }
+  .banner.warn { background: #3a3220; color: #e8cf9a; border: 1px solid #6d5c2e; }
+  .fw { display: flex; gap: 22px; flex-wrap: wrap; }
+  .fw > div { flex: 1 1 300px; min-width: 280px; }
+  .fw h3 { font-size: 13px; margin: 0 0 4px; font-weight: 600; }
+  .ver { font-family: var(--mono); font-size: 12px; color: var(--dim); margin: 0 0 10px; }
+  .ver b { color: var(--ink); font-weight: 600; }
+  input[type=file] { width: 100%; padding: 5px 6px; }
+  input[type=file]::file-selector-button {
+    font: inherit; color: var(--ink); background: var(--panel2); cursor: pointer;
+    border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px; margin-right: 8px;
+  }
+  .bar { height: 6px; background: var(--panel2); border: 1px solid var(--line);
+         border-radius: 3px; overflow: hidden; margin-top: 10px; display: none; }
+  .bar.show { display: block; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent);
+             transition: width .2s linear; }
+  .fwmsg { font-size: 12px; color: var(--dim); margin: 8px 0 0; min-height: 1.5em; }
+  .fwmsg.err { color: var(--bad); } .fwmsg.ok { color: var(--good); }
+  .dl { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+  .dl a { color: var(--accent); font-size: 12px; text-decoration: none;
+          border: 1px solid var(--line); border-radius: 4px; padding: 5px 9px;
+          background: var(--panel2); }
+  .dl a:hover { border-color: var(--accent); }
+  .dl a[aria-disabled=true] { opacity: .45; pointer-events: none; }
+  .dl span { font-size: 12px; color: var(--dim); }
 </style>
 </head>
 <body>
@@ -172,6 +197,55 @@
           exactly what the original firmware does.</p>
       </div>
     </div>
+  </section>
+
+  <section>
+    <h2>Firmware</h2>
+    <div id="recovery" class="banner warn" style="margin-bottom:14px"></div>
+    <div class="fw">
+      <div>
+        <h3>Keyboard</h3>
+        <p class="ver" id="kbver">reading…</p>
+        <input type="file" id="kbfile" accept=".bin">
+        <div class="bar" id="kbbar"><i></i></div>
+        <p class="fwmsg" id="kbmsg"></p>
+        <div class="dl">
+          <a id="kbdl" href="/api/firmware/keyboard" download="mpk-mini-open.bin"
+             aria-disabled="true">Download installed</a>
+          <span id="kbdlnote">checking…</span>
+        </div>
+        <p class="hint">Upload <code>firmware/build/mpk-mini-open.bin</code>. It
+          crosses the MIDI link at 31250 baud, so expect about six seconds.
+          The keyboard restarts itself when it is done.</p>
+        <p class="hint">Losing power partway through is safe: the keyboard comes
+          back in recovery mode and you upload again. It is not safe to unplug
+          during the last moment, when it writes what makes the image bootable
+          — but that failing only costs you another upload, never the unit.</p>
+      </div>
+      <div>
+        <h3>Bridge (ESP32)</h3>
+        <p class="ver" id="espver">reading…</p>
+        <input type="file" id="espfile" accept=".bin">
+        <div class="bar" id="espbar"><i></i></div>
+        <p class="fwmsg" id="espmsg"></p>
+        <div class="dl">
+          <a id="espdl" href="/api/firmware/bridge" download="mpk_mini_ble_midi.bin">Download running</a>
+          <span>the image this bridge is running</span>
+        </div>
+        <p class="hint">Upload
+          <code>esp32-c3-ble-midi/build/mpk_mini_ble_midi.bin</code>. It is
+          written to the spare slot and booted on probation; if it fails to
+          start, the bootloader puts the working one back.</p>
+        <p class="hint">This access point disappears while the bridge restarts.
+          Rejoin <b>MPK-mini-Open</b> after a few seconds.</p>
+      </div>
+    </div>
+    <p class="hint">Each file goes to one processor only, and a file offered to
+      the wrong one is refused before anything is erased.</p>
+    <p class="hint">Downloading gives you back exactly the image that is
+      installed — the keyboard's is read out over the MIDI link and checked
+      against the checksum it reports, so a truncated copy is refused rather
+      than saved. Take one before you overwrite a build you might want again.</p>
   </section>
 </main>
 
@@ -411,6 +485,182 @@
     }).catch(function () { setStatus("bridge unreachable", "err"); });
   }
 
+
+  /* ---------- firmware ---------- */
+
+  /*
+   * The two uploads report progress from different places, because they
+   * are bottlenecked in different places. The keyboard's image crawls
+   * across the MIDI link long after the browser has finished pushing it
+   * into the socket, so the bridge answers at once and the real progress
+   * is polled. The bridge's own image is limited by WiFi and flash, so
+   * the browser's own upload progress is the honest number there.
+   */
+  var fwBusy = false;
+
+  function fwMessage(id, text, kind) {
+    var node = el(id);
+    node.textContent = text || "";
+    node.className = "fwmsg" + (kind ? " " + kind : "");
+  }
+
+  function fwBar(id, fraction) {
+    var bar = el(id);
+    if (fraction === null) { bar.className = "bar"; return; }
+    bar.className = "bar show";
+    bar.firstChild.style.width = Math.round(Math.max(0, Math.min(1, fraction)) * 100) + "%";
+  }
+
+  function loadFirmware() {
+    return request("/api/firmware").then(function (f) {
+      el("espver").innerHTML = "version <b>" + f.bridge.version + "</b> · slot " +
+        f.bridge.slot + " · built " + f.bridge.built;
+      if (f.updating) {
+        el("kbver").innerHTML = "<b>update in progress</b>";
+        return f;
+      }
+      if (!f.keyboard.present) {
+        el("kbver").innerHTML = "<b>not answering</b> — check the UART wiring";
+        el("kbdl").setAttribute("aria-disabled", "true");
+        el("kbdlnote").textContent = "";
+        el("recovery").className = "banner";
+        return f;
+      }
+      el("kbver").innerHTML = "version <b>" + f.keyboard.version + "</b> · " +
+        f.keyboard.slotSize + " byte slot";
+
+      var dl = el("kbdl"), note = el("kbdlnote");
+      if (f.keyboard.canDownload) {
+        dl.setAttribute("aria-disabled", "false");
+        note.textContent = f.keyboard.installedSize + " bytes installed";
+      } else {
+        dl.setAttribute("aria-disabled", "true");
+        note.textContent = f.keyboard.installedSize
+          ? "this firmware cannot send an image back"
+          : "nothing installed to download";
+      }
+      if (f.keyboard.mode === "recovery") {
+        el("recovery").textContent =
+          "The keyboard is in recovery mode: it has no working application " +
+          "installed, or TAP TEMPO was held at power-on. It plays nothing and " +
+          "sweeps a single pad light. Upload a keyboard image below to bring " +
+          "it back. Everything else on this page needs the full firmware and " +
+          "will not answer until then.";
+        el("recovery").className = "banner warn show";
+      } else {
+        el("recovery").className = "banner";
+      }
+      return f;
+    }).catch(function () {
+      el("espver").textContent = "bridge unreachable";
+      el("kbver").textContent = "";
+      return null;
+    });
+  }
+
+  function pollKeyboardUpdate() {
+    return request("/api/firmware/progress").then(function (p) {
+      if (p.phase === "running") {
+        fwBar("kbbar", p.total ? p.done / p.total : 0);
+        fwMessage("kbmsg", "sending " + p.done + " of " + p.total + " bytes…");
+        return new Promise(function (resolve) {
+          setTimeout(function () { resolve(pollKeyboardUpdate()); }, 400);
+        });
+      }
+      fwBar("kbbar", p.phase === "done" ? 1 : null);
+      if (p.phase === "done") {
+        fwMessage("kbmsg", p.detail, "ok");
+        /* The keyboard reboots a moment after accepting the image, so
+         * give it time to come back before asking what it is running. */
+        setTimeout(function () { loadFirmware().then(poll); }, 2500);
+      } else {
+        fwMessage("kbmsg", p.detail || "the update failed", "err");
+        loadFirmware();
+      }
+      fwBusy = false;
+      return p;
+    });
+  }
+
+  function uploadKeyboard(file) {
+    fwBusy = true;
+    fwMessage("kbmsg", "staging " + file.size + " bytes…");
+    fwBar("kbbar", 0);
+    return fetch("/api/firmware/keyboard", {method: "POST", body: file})
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (body) {
+          if (!r.ok) throw new Error(body.error || ("HTTP " + r.status));
+          return pollKeyboardUpdate();
+        });
+      })
+      .catch(function (e) {
+        fwBusy = false;
+        fwBar("kbbar", null);
+        fwMessage("kbmsg", e.message, "err");
+      });
+  }
+
+  /* XHR rather than fetch: only XHR reports how much of the body has
+   * actually gone out, which is the meaningful number for this one. */
+  function uploadBridge(file) {
+    fwBusy = true;
+    fwBar("espbar", 0);
+    fwMessage("espmsg", "uploading " + file.size + " bytes…");
+
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/firmware/bridge");
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable) fwBar("espbar", e.loaded / e.total);
+    };
+    xhr.onload = function () {
+      fwBusy = false;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        fwBar("espbar", 1);
+        fwMessage("espmsg",
+          "Installed. The bridge is restarting — rejoin MPK-mini-Open in a " +
+          "few seconds and reload this page.", "ok");
+      } else {
+        fwBar("espbar", null);
+        var detail = "";
+        try { detail = JSON.parse(xhr.responseText).error; } catch (ignored) {}
+        fwMessage("espmsg", detail || ("HTTP " + xhr.status), "err");
+      }
+    };
+    xhr.onerror = function () {
+      fwBusy = false;
+      fwBar("espbar", null);
+      /* The bridge restarting mid-reply looks exactly like a network
+       * error from here, so this is not necessarily a failure. */
+      fwMessage("espmsg",
+        "Connection lost. If the upload had finished, the bridge is " +
+        "restarting; rejoin the network and reload to check the version.",
+        "err");
+    };
+    xhr.send(file);
+  }
+
+  function pickAndUpload(inputId, upload) {
+    el(inputId).addEventListener("change", function () {
+      var file = this.files && this.files[0];
+      this.value = "";
+      if (!file) return;
+      if (fwBusy || busy) return;
+      upload(file);
+    });
+  }
+
+  pickAndUpload("kbfile", uploadKeyboard);
+  pickAndUpload("espfile", uploadBridge);
+
+  /* The keyboard's image comes back over the same 31250-baud link it
+   * goes out on, so the browser sits on the request for several seconds
+   * with nothing to show. Say so rather than looking hung. */
+  el("kbdl").addEventListener("click", function () {
+    if (this.getAttribute("aria-disabled") === "true") return;
+    fwMessage("kbmsg", "reading the image back over the MIDI link…");
+    setTimeout(function () { fwMessage("kbmsg", ""); }, 12000);
+  });
+
   /* ---------- wire up ---------- */
   buildTables();
   el("reload").addEventListener("click", loadProgram);
@@ -438,8 +688,9 @@
 
   drawGraph();
   poll();
+  loadFirmware();
   loadSettings().then(loadProgram);
-  setInterval(function () { if (!busy) poll(); }, 5000);
+  setInterval(function () { if (!busy && !fwBusy) poll(); }, 5000);
 })();
 </script>
 </body>

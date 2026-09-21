@@ -4,13 +4,14 @@
  *
  * The 101-byte program payload travels in the original firmware's "wire"
  * order, which is a pure byte reorder of its in-memory record (see
- * firmware/src/program.c). RECORD_TO_WIRE below mirrors that table so
+ * stm32/src/program.c). RECORD_TO_WIRE below mirrors that table so
  * this side can address fields by their record offset and hand the
  * browser named JSON instead of an opaque blob. It is a fixed property
  * of the original protocol, not a value that drifts with our firmware.
  */
 #include "editor.h"
 #include "captive_dns.h"
+#include "firmware_update.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -55,7 +56,7 @@ static const char *TAG = "editor";
 #define SETTINGS_LEN  6
 #define SYSEX_TIMEOUT 800
 
-/* Mirrors firmware/src/program.c's RECORD_TO_WIRE. */
+/* Mirrors stm32/src/program.c's RECORD_TO_WIRE. */
 static const uint8_t RECORD_TO_WIRE[RECORD_SIZE] = {
 	1,0,2,3,4,5,6,7,8,9,10,11,12,13,45,14,46,15,47,16,48,17,49,18,50,19,51,
 	20,52,21,53,22,54,23,55,24,56,25,57,26,58,27,59,28,60,29,61,30,62,31,63,
@@ -64,7 +65,7 @@ static const uint8_t RECORD_TO_WIRE[RECORD_SIZE] = {
 	99,100
 };
 
-/* Record offsets, from firmware/include/program.h. */
+/* Record offsets, from stm32/include/program.h. */
 #define R_CHANNEL 0x00
 #define R_PAD_CHANNEL 0x01
 #define R_OCTAVE 0x02
@@ -515,8 +516,11 @@ static void portal_start(void)
 
 	httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 	config.uri_match_fn = httpd_uri_match_wildcard;
-	config.max_uri_handlers = 10;
-	config.stack_size = 5120;
+	config.max_uri_handlers = 10 + FIRMWARE_UPDATE_ROUTE_COUNT;
+	/* The firmware upload handler streams the bridge's own image through
+	 * a 1 KiB stack buffer, which the previous 5120 did not leave much
+	 * room above. */
+	config.stack_size = 7168;
 	config.lru_purge_enable = true;
 	/* httpd needs max_open_sockets + 3 internal sockets to fit inside
 	 * CONFIG_LWIP_MAX_SOCKETS, and the default asks for more than this
@@ -529,6 +533,10 @@ static void portal_start(void)
 		esp_wifi_stop();
 		return;
 	}
+	/* Before the table below, whose last entry is the wildcard catch-all
+	 * that sends anything unrecognised to the editor page. Handlers are
+	 * matched in registration order, so it has to stay last. */
+	firmware_update_register_routes(server);
 	for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++)
 		httpd_register_uri_handler(server, &routes[i]);
 
@@ -560,6 +568,7 @@ static void portal_stop(void)
 void editor_init(void)
 {
 	sysex_bridge_init();
+	firmware_update_init();
 	portal_active = false;
 	netif_ready = false;
 	server = NULL;

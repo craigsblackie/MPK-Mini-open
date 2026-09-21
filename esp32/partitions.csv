@@ -1,11 +1,26 @@
-# Custom table: the default single-app layout caps the application at 1 MB,
-# and BLE plus WiFi coexistence together overrun that. The SuperMini carries
-# 4 MB of flash, so the app gets 2 MB and there is still room to spare.
+# Two application slots, so the bridge can update itself over WiFi.
+#
+# The default single-app layout caps the application at 1 MB, and BLE plus
+# WiFi coexistence together overrun that. The SuperMini carries 4 MB, which
+# is enough for two 1.875 MB slots with room left over -- the app is about
+# 1.2 MB, so neither slot is close to full.
+#
+# otadata records which slot to boot and whether the last update has been
+# confirmed. With CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE a freshly written
+# slot boots once on probation: main.c calls esp_ota_mark_app_valid_...
+# after the radios and the UART link are up, and if it never gets that far
+# the bootloader reverts to the slot that was working before.
 #
 # nvs holds the BLE bonds, which must survive the power cycle that happens
-# every time the keyboard is unplugged.
+# every time the keyboard is unplugged. It stays where it was, so an
+# existing unit keeps its pairings across the one USB reflash this layout
+# change requires.
+#
+# App slots must start on a 64 KiB boundary on the ESP32-C3.
 #
 # Name,    Type, SubType, Offset,   Size
 nvs,       data, nvs,     0x9000,   0x6000
-phy_init,  data, phy,     0xf000,   0x1000
-factory,   app,  factory, 0x10000,  0x200000
+otadata,   data, ota,     0xf000,   0x2000
+phy_init,  data, phy,     0x11000,  0x1000
+ota_0,     app,  ota_0,   0x20000,  0x1E0000
+ota_1,     app,  ota_1,   0x200000, 0x1E0000

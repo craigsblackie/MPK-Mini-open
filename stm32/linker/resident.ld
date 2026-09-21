@@ -1,10 +1,15 @@
 /*
- * Linker script for STM32F102R8T6.
+ * Linker script for the resident loader/recovery image.
  *
  * Preserve the stock 8 KiB updater at 0x08000000. It validates and
- * jumps through this application's vector table at 0x08002000. The
- * final halfword at 0x080077fe is its additive application checksum;
- * the program store begins on the next page at 0x08007800.
+ * jumps through this image's vector table at 0x08002000. The final
+ * halfword at 0x080077fe is its additive checksum; the program store
+ * begins on the next page at 0x08007800.
+ *
+ * This is the image the stock updater checksums, so it is installed
+ * once over SWD and never rewritten in the field. The application it
+ * hands over to lives above the program store and has its own script
+ * (app.ld). See include/otamap.h for the whole layout.
  *
  * SRAM size is 20 KiB. In addition to the part-family specification,
  * this is now hardware-validated: the replacement firmware runs with
@@ -25,9 +30,9 @@ _estack = ORIGIN(RAM) + LENGTH(RAM);
  * The retained AKAI updater loads the first vector word into MSP and then
  * pops two words before branching to the reset vector.  Point it eight
  * bytes below the true stack top so that its pop is in bounds and leaves
- * MSP at _estack for the application.
+ * MSP at _estack for this image.
  */
-_handoff_stack = _estack - 8;
+_vector_stack = _estack - 8;
 
 SECTIONS
 {
