@@ -26,12 +26,13 @@ Running on a real AD07 board. Measured there:
 | Full cycle through the web page, upload and download | 1 / 1 |
 
 Also verified: the resident image installed over SWD, the boot gate
-rejecting a slot it should, and the program store surviving every update.
+rejecting a slot it should, the program store surviving every update, and
+the instrument playing normally afterwards — the USB endpoint changes
+underneath all of this did not disturb keys, pads or knobs.
 
-Not verified: playing the instrument after these changes — enumeration,
-SysEx and program dumps all work, but keys, pads and knobs have not been
-exercised since the USB endpoint changes. Nor the battery-powered supply
-variants, nor any board revision other than AD07.
+Not verified: BLE MIDI since the bridge's UART transmit lock was added,
+the battery-powered supply variants, and any board revision other than
+AD07.
 
 ---
 
