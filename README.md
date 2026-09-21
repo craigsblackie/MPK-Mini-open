@@ -10,6 +10,20 @@ Both processors can be **updated and backed up from a web page the bridge
 hosts itself** — no debugger, no host software, no cable. See
 [Firmware updates](#3-firmware-updates).
 
+Both firmwares take their version from `version.txt` at the root of this
+repository, so a running unit reports the same number the sources carry.
+Current version: **1.1.0**.
+
+### Status
+
+Running on a real AD07 board. Verified there: the resident image installed
+over SWD, the application uploaded through the web page over WiFi and the
+MIDI link, the keyboard's restart into recovery and back, repeated
+upload/download cycles, and downloaded images byte-identical to the build.
+
+Not verified: the battery-powered variants of the supply wiring, and any
+board revision other than AD07.
+
 ---
 
 ## 1. STM32 Firmware (Keyboard)
@@ -78,6 +92,10 @@ Outputs:
 
 Prebuilt copies of all three are in `stm32/releases/`, with `SHA256SUMS`.
 
+The Makefile tracks header dependencies (`-MMD -MP`). Without that, editing a
+header left stale objects behind and produced an image that was a mixture of
+two builds — which is exactly as confusing to debug as it sounds.
+
 ### Flash (first install, over SWD)
 
 The stock AKAI updater must already be present at `0x08000000..0x08001fff`.
@@ -143,7 +161,13 @@ boundary never leaves a bootable half-image, that a CRC mismatch refuses to
 commit, and that the boot gate rejects wrong magic, torn trailers, single-bit
 flips and bad vector tables. `ota.c` goes into both firmwares and behaves
 differently in each, so it is built and tested twice: as recovery, which does
-the transfer, and as the application, which must refuse it and hand over. The transfer code reaches flash only through
+the transfer, and as the application, which must refuse it and hand over.
+
+The transfer code reaches flash only through `flash.h`, so it runs against an
+array that enforces what NOR flash enforces: erased bytes read `0xff`,
+programming only clears bits, and a write to an unerased halfword fails. A
+test that passes is not passing because the stand-in was more forgiving than
+the hardware. The transfer code reaches flash only through
 `flash.h`, so it runs against an array that enforces what NOR flash enforces:
 erased bytes read `0xff`, programming only clears bits, and writing to an
 unerased halfword fails.
@@ -255,20 +279,50 @@ ESP-IDF images start with `0xe9`, STM32 images start with a stack pointer in
 SRAM, and each endpoint checks for the other's signature.
 
 **Robustness.** A transfer is thousands of request/reply exchanges where the
-editor previously made one, which turns rare faults into reliable ones. Two
-show up at that rate and are handled rather than wished away. The keyboard's
-USB MIDI OUT endpoint can be left unable to receive — `STAT_RX` stuck at NAK
-with no arrival pending — after which the firmware runs perfectly and is
-simply deaf; `usb_poll()` now detects exactly that state and re-arms it. And
-because anything the host was delivering at that moment is discarded, both
-senders retry a message that draws no reply at all. A refusal is never
-retried, only silence; every sub-command is either idempotent or
-resynchronises from the offset the keyboard echoes back, so asking again is
-correct rather than hopeful.
+editor previously made one, which turns rare faults into reliable ones. Three
+showed up at that rate during bring-up and are handled rather than wished
+away:
+
+- The keyboard's **USB MIDI OUT endpoint could be left unable to receive** —
+  `STAT_RX` stuck at NAK with no arrival pending — after which the firmware
+  runs perfectly and is simply deaf. The endpoint register's `CTR` flags are
+  write-0-to-clear, and two masks omitted them, so routine writes discarded
+  an arrival that had not been serviced yet. The masks are ST's
+  `USB_EPREG_MASK` now, and `usb_poll()` re-arms the endpoint if it ever
+  finds that state anyway. *That backstop is deliberate and not a diagnosis:
+  the stuck state was still observed once after the mask fix, so a path
+  remains that has not been isolated.* If you ever see a transfer stall and
+  then recover, that is the residue.
+- Anything the host was delivering while the endpoint was NAKing is
+  discarded, so **both senders retry a message that draws no reply at all**.
+  A refusal is never retried, only silence; every sub-command is either
+  idempotent or resynchronises from the offset the keyboard echoes back, so
+  asking again is correct rather than hopeful.
+- The **MIDI ring was too small** for the replies this adds. A 141-byte read
+  reply inflates to 188 bytes of USB-MIDI framing, pushed in one burst, and
+  the original firmware's 240-byte buffer left 52 bytes of slack — one queued
+  CC was enough to truncate a reply and stall a download. It is 512 here,
+  deliberately larger than stock; nothing outside the firmware can observe
+  the size.
 
 ---
 
-## 4. Hardware Setup & Wiring
+## 4. Versioning
+
+`version.txt` at the root of this repository is the single source of truth.
+The STM32 Makefile turns it into `FIRMWARE_VERSION_*` and the ESP-IDF project
+reads it into `PROJECT_VER`, so both halves report the same number and a unit
+in the field can be identified from the Firmware panel.
+
+ESP-IDF would otherwise fall back to `git describe`, which reports the state
+of whatever working copy the build ran in rather than anything about the
+firmware — a bridge built from a dirty tree once advertised itself as
+`d229c96-dirty`. Bump `version.txt` and rebuild both; nothing else needs
+touching.
+
+---
+
+## 5. Hardware Setup & Wiring
 
 ### Signal Wiring (UART Link)
 Connect the STM32 and ESP32-C3 directly via TTL (3.3V logic).

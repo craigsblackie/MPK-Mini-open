@@ -12,6 +12,16 @@
 #
 # See include/otamap.h for the layout and README.md for the flashing order.
 
+# One source of truth for both firmwares' version, shared with the ESP32
+# project next door. Without this the reported version came from whatever
+# git tree happened to be around the build, which said more about the
+# working copy than about the firmware.
+VERSION_FILE = ../version.txt
+VERSION := $(shell cat $(VERSION_FILE) 2>/dev/null || echo 0.0.0)
+VERSION_MAJOR := $(word 1,$(subst ., ,$(VERSION)))
+VERSION_MINOR := $(word 2,$(subst ., ,$(VERSION)))
+VERSION_PATCH := $(word 3,$(subst ., ,$(VERSION)))
+
 CC = arm-none-eabi-gcc
 OBJCOPY = arm-none-eabi-objcopy
 SIZE = arm-none-eabi-size
@@ -24,7 +34,10 @@ RESIDENT = mpk-mini-resident
 # leaves stale objects in place and the resulting image is a mixture of
 # two builds -- which is exactly as confusing to debug as it sounds.
 CFLAGS = -mthumb -mcpu=cortex-m3 -Os -g3 -Wall -Wextra \
-         -ffreestanding -nostdlib -Iinclude -MMD -MP
+         -ffreestanding -nostdlib -Iinclude -MMD -MP \
+         -DFIRMWARE_VERSION_MAJOR=$(VERSION_MAJOR) \
+         -DFIRMWARE_VERSION_MINOR=$(VERSION_MINOR) \
+         -DFIRMWARE_VERSION_PATCH=$(VERSION_PATCH)
 LDFLAGS = -nostdlib -Wl,--gc-sections
 
 # Sources shared by both images: the wire format, the flash primitives and

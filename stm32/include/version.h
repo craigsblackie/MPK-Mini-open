@@ -11,8 +11,17 @@
  * carries the version that was last uploaded. They are allowed to
  * differ, and the editor shows both.
  */
-#define FIRMWARE_VERSION_MAJOR 1
+/* Normally supplied by the build from version.txt, which the ESP32
+ * project reads too. These are the fallback for a compile that does not
+ * go through the Makefile, such as a host test. */
+#ifndef FIRMWARE_VERSION_MAJOR
+#define FIRMWARE_VERSION_MAJOR 0
+#endif
+#ifndef FIRMWARE_VERSION_MINOR
 #define FIRMWARE_VERSION_MINOR 0
+#endif
+#ifndef FIRMWARE_VERSION_PATCH
 #define FIRMWARE_VERSION_PATCH 0
+#endif
 
 #endif /* VERSION_H */
