@@ -177,10 +177,7 @@ The transfer code reaches flash only through `flash.h`, so it runs against an
 array that enforces what NOR flash enforces: erased bytes read `0xff`,
 programming only clears bits, and a write to an unerased halfword fails. A
 test that passes is not passing because the stand-in was more forgiving than
-the hardware. The transfer code reaches flash only through
-`flash.h`, so it runs against an array that enforces what NOR flash enforces:
-erased bytes read `0xff`, programming only clears bits, and writing to an
-unerased halfword fails.
+the hardware.
 
 ---
 

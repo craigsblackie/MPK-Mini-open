@@ -8,6 +8,7 @@ stm32/test/velocity_test
 stm32/test/transport_test
 stm32/test/program_hold_test
 stm32/test/ota_test
+stm32/test/ota_app_test
 esp32/test/test
 esp32/test/editor_test
 esp32/test/firmware_update_test
