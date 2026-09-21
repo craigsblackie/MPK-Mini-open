@@ -16,13 +16,22 @@ Current version: **1.1.0**.
 
 ### Status
 
-Running on a real AD07 board. Verified there: the resident image installed
-over SWD, the application uploaded through the web page over WiFi and the
-MIDI link, the keyboard's restart into recovery and back, repeated
-upload/download cycles, and downloaded images byte-identical to the build.
+Running on a real AD07 board. Measured there:
 
-Not verified: the battery-powered variants of the supply wiring, and any
-board revision other than AD07.
+| | |
+|---|---|
+| Uploads over USB MIDI, each through the restart into recovery | 12 / 12 |
+| Downloads, every byte compared against the build | 28 / 28 |
+| Bridge self-updates over WiFi | 4 / 4 |
+| Full cycle through the web page, upload and download | 1 / 1 |
+
+Also verified: the resident image installed over SWD, the boot gate
+rejecting a slot it should, and the program store surviving every update.
+
+Not verified: playing the instrument after these changes — enumeration,
+SysEx and program dumps all work, but keys, pads and knobs have not been
+exercised since the USB endpoint changes. Nor the battery-powered supply
+variants, nor any board revision other than AD07.
 
 ---
 
@@ -289,10 +298,18 @@ away:
   write-0-to-clear, and two masks omitted them, so routine writes discarded
   an arrival that had not been serviced yet. The masks are ST's
   `USB_EPREG_MASK` now, and `usb_poll()` re-arms the endpoint if it ever
-  finds that state anyway. *That backstop is deliberate and not a diagnosis:
-  the stuck state was still observed once after the mask fix, so a path
-  remains that has not been isolated.* If you ever see a transfer stall and
-  then recover, that is the residue.
+  finds that state anyway.
+
+  *That backstop is deliberate and not a diagnosis.* `usb_rearm_count`
+  counts how often it has had to act, and on a measured run of about 1000
+  request/reply exchanges it fired **twice** — so the underlying fault is
+  still live at roughly two occurrences per thousand exchanges, and has not
+  been isolated. Every one of those transfers still completed and verified,
+  because the backstop restores the endpoint and the senders retry the
+  message that was lost while it was wedged. Read the counter over SWD
+  (`mdw` on the symbol) to see whether a unit has hit it. Note that it
+  resets with the processor, and an upload reboots the keyboard, so measure
+  it with downloads.
 - Anything the host was delivering while the endpoint was NAKing is
   discarded, so **both senders retry a message that draws no reply at all**.
   A refusal is never retried, only silence; every sub-command is either

@@ -126,6 +126,12 @@ static void ep_set_stat_rx(uint8_t ep, uint32_t stat)
 static volatile uint8_t usb_address_pending;
 static volatile uint8_t usb_address_value;
 static volatile uint8_t usb_configured;
+/* How many times the backstop above has had to act. Zero means the
+ * endpoint has never been found wedged and this is dead code; anything
+ * else means the underlying fault is still live and still unexplained.
+ * Kept so the question can be answered from a running unit over SWD
+ * rather than guessed at. */
+volatile uint32_t usb_rearm_count;
 static uint8_t ctrl_reply[2];
 
 /* Multi-packet EP0 IN transfer state -- a control transfer whose data
@@ -347,6 +353,7 @@ void usb_poll(void)
 		uint16_t ep1 = USB_EPR(1);
 		if (((ep1 >> 12) & 0x3u) == USB_EP_STAT_NAK && !(ep1 & (1u << 15))) {
 			ep_set_stat_rx(1, USB_EP_STAT_VALID);
+			usb_rearm_count++;
 		}
 	}
 

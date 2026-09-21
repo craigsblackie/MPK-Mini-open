@@ -84,8 +84,14 @@ class Link:
         self.path = path
         self.fd = os.open(path, os.O_RDWR)
 
-    def reopen(self, timeout=15.0):
-        """Reconnect after the keyboard resets and re-enumerates."""
+    def reopen(self, timeout=20.0):
+        """Reconnect after the keyboard resets and re-enumerates.
+
+        The node can reappear before the device behind it is ready, and
+        it does not always come back with the same card number, so this
+        re-resolves the path each time and proves the result by reading
+        the port's own descriptor rather than trusting the open.
+        """
         try:
             os.close(self.fd)
         except OSError:
@@ -93,29 +99,49 @@ class Link:
         deadline = time.time() + timeout
         while time.time() < deadline:
             time.sleep(0.5)
-            node = find_port(self.path)
+            node = find_port(None)
             if node is None:
                 continue
             try:
-                self.fd = os.open(node, os.O_RDWR)
+                fd = os.open(node, os.O_RDWR)
+                os.write(fd, b"\xfe")  # active sensing: harmless, proves it is alive
             except OSError:
                 continue
+            self.fd = fd
             self.path = node
             return True
         return False
 
     def exchange(self, sub, payload=b"", timeout=3.0):
+        """One request and its reply.
+
+        The device node can go away underneath this: the keyboard resets
+        after a commit and after handing a transfer to recovery, and the
+        node is briefly present but dead while it re-enumerates. Reads
+        and writes then fail with ENODEV, which is a reconnect to be
+        waited out rather than an error to report.
+        """
         length = 1 + len(payload)
         message = bytes([0xF0, 0x47, 0x00, 0x7C, CMD,
                          (length >> 7) & 0x7F, length & 0x7F, sub]) + payload + b"\xf7"
-        os.write(self.fd, message)
+        try:
+            os.write(self.fd, message)
+        except OSError:
+            if not self.reopen():
+                raise SystemExit("the keyboard went away and did not come back")
+            os.write(self.fd, message)
 
         reply = bytearray()
         deadline = time.time() + timeout
         while time.time() < deadline:
             if not select.select([self.fd], [], [], deadline - time.time())[0]:
                 break
-            chunk = os.read(self.fd, 256)
+            try:
+                chunk = os.read(self.fd, 256)
+            except OSError:
+                if not self.reopen():
+                    raise SystemExit("the keyboard went away and did not come back")
+                break  # the request went to a device that is no longer there
             for b in chunk:
                 if b == 0xF0:
                     reply = bytearray([b])
